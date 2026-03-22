@@ -41,6 +41,7 @@
   let view    = "home";
   let current = null;  // active lesson object
   let activeTab = "conversation";
+  let learningMode = "student"; // "student" | "kids" | "exam"
 
   /* ══ 3. Progress bar ═══════════════════════════════════════ */
   let _progTimer;
@@ -151,6 +152,12 @@
   };
 
   /* ══ 8. Open lesson ════════════════════════════════════════ */
+  const MODE_META = {
+    student: { label: "🎒 Student", cls: "mode-student" },
+    kids:    { label: "🧸 Kids",    cls: "mode-kids"    },
+    exam:    { label: "📝 Exam",    cls: "mode-exam"    },
+  };
+
   const openLesson = (lesson) => {
     current   = lesson;
     activeTab = "conversation";
@@ -158,10 +165,20 @@
     EL.lessonDate.textContent  = new Date(lesson.createdAt)
       .toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 
+    // Learning mode badge
+    const modeBadge = document.getElementById("lessonModeBadge");
+    if (modeBadge) {
+      const m = lesson.learningMode || "student";
+      const meta = MODE_META[m] || MODE_META.student;
+      modeBadge.textContent  = meta.label;
+      modeBadge.className    = `lesson-mode-badge ${meta.cls}`;
+      modeBadge.style.display = "";
+    }
+
     // Audio bar
     if (lesson.audioUrl) {
-      EL.audioBar.hidden     = false;
-      EL.audioEl.src         = lesson.audioUrl;
+      EL.audioBar.hidden        = false;
+      EL.audioEl.src            = lesson.audioUrl;
       EL.audioLabel.textContent = "Podcast audio ready";
     } else {
       EL.audioBar.hidden = true;
@@ -181,6 +198,7 @@
     const renderers = {
       conversation: renderConversation,
       quiz:         renderQuiz,
+      cheatsheet:   renderCheatSheet,
       summary:      renderSummary,
       visual:       renderVisual,
     };
@@ -289,6 +307,95 @@
       <div class="key-pts">${pts}</div>`;
   };
 
+
+  /* ─ Cheat Sheet ─ */
+  const renderCheatSheet = (l) => {
+    const cs = l.cheatsheet || {};
+
+    const keyTermsHTML = (cs.key_terms || []).map((t) => `
+      <div class="cs-row">
+        <div class="cs-row__q">${esc(t.term)}</div>
+        <div class="cs-row__a">${esc(t.definition)}</div>
+      </div>`).join("") || '<p style="color:var(--muted);font-size:13px">No key terms found.</p>';
+
+    const conceptsHTML = (cs.core_concepts || []).map((c, i) =>
+      `<div class="cs-bullet">${esc(c)}</div>`
+    ).join("");
+
+    const quickQAHTML = (cs.quick_qa || []).map((q) => `
+      <div class="cs-row">
+        <div class="cs-row__q">${esc(q.q)}</div>
+        <div class="cs-row__a">${esc(q.a)}</div>
+      </div>`).join("");
+
+    const formulasHTML = (cs.formulas || []).length
+      ? `<div class="cs-section">
+           <div class="cs-section__title">⚗️ Formulas &amp; Rules</div>
+           <div class="cs-formula-grid">
+             ${(cs.formulas || []).map((f) => `
+               <div class="cs-formula">
+                 <div class="cs-formula__label">${esc(f.label)}</div>
+                 <div class="cs-formula__value">${esc(f.value)}</div>
+               </div>`).join("")}
+           </div>
+         </div>` : "";
+
+    const tipsHTML = (cs.memory_tips || []).map((t) =>
+      `<span class="cs-pill teal">${esc(t)}</span>`
+    ).join("");
+
+    // Mode-specific header color
+    const modeColors = { student:"var(--accent)", kids:"var(--teal)", exam:"var(--gold)" };
+    const modeColor  = modeColors[l.learningMode || "student"];
+    const modeLabel  = { student:"Student", kids:"Kids 🧸", exam:"Exam 📝" }[l.learningMode||"student"];
+
+    EL.tabPanel.innerHTML = `
+      <div class="cheatsheet">
+        <div class="cheatsheet__header" style="background:color-mix(in srgb,${modeColor} 8%,var(--card))">
+          <div class="cheatsheet__header-left">
+            <span class="cheatsheet__icon">📄</span>
+            <div>
+              <div class="cheatsheet__title">Cheat Sheet</div>
+              <div class="cheatsheet__topic">${esc(l.topic)} · ${modeLabel} Mode</div>
+            </div>
+          </div>
+          <button class="cheatsheet__download" onclick="window.print()">
+            🖨️ Print / Save PDF
+          </button>
+        </div>
+
+        <div class="cheatsheet__body">
+
+          <div class="cs-section">
+            <div class="cs-section__title">📖 Key Terms</div>
+            <div class="cs-rows">${keyTermsHTML}</div>
+          </div>
+
+          <div class="cs-section">
+            <div class="cs-section__title">💡 Core Concepts</div>
+            <div class="cs-bullets">${conceptsHTML}</div>
+          </div>
+
+          <div class="cs-section">
+            <div class="cs-section__title">❓ Quick Q&amp;A</div>
+            <div class="cs-rows">${quickQAHTML}</div>
+          </div>
+
+          ${formulasHTML}
+
+          ${tipsHTML ? `
+          <div class="cs-section">
+            <div class="cs-section__title">🧠 Memory Tips</div>
+            <div class="cs-pills">${tipsHTML}</div>
+          </div>` : ""}
+
+        </div>
+        <div class="cheatsheet__print-note">
+          💡 Use Ctrl+P (or ⌘+P) and select "Save as PDF" to download this cheat sheet
+        </div>
+      </div>`;
+  };
+
   /* ─ Visual Map ─ */
   const renderVisual = (l) => {
     const typeEmoji = { diagram: "📊", chart: "📈", illustration: "🖼️" };
@@ -340,17 +447,17 @@
     EL.btnGenerate.innerHTML = `<span class="spin"></span> Processing…`;
 
     try {
+      const modeLabel = { student:"🎒 Student", kids:"🧸 Kids", exam:"📝 Exam" };
+      EL.btnGenerate.innerHTML = `<span class="spin"></span> ${modeLabel[learningMode]||""} Mode…`;
       const lesson = await API.generateLesson(text, (pct) => {
         EL.navProgressFill.style.width = `${pct}%`;
-        // Show retrying message when server is retrying Gemini
-        if (pct === 55) {
-          EL.btnGenerate.innerHTML = `<span class="spin"></span> Thinking…`;
-        }
-      });
-      lesson.localId   = `lesson_${Date.now()}`;
-      lesson.createdAt = Date.now();
-      lesson.audioUrl  = null;
-      lesson.synced    = false;
+        if (pct === 55) EL.btnGenerate.innerHTML = `<span class="spin"></span> AI thinking…`;
+      }, learningMode);
+      lesson.localId     = `lesson_${Date.now()}`;
+      lesson.createdAt  = Date.now();
+      lesson.audioUrl   = null;
+      lesson.synced     = false;
+      lesson.learningMode = learningMode;
 
       await DB.save(lesson);
       refreshNav();
@@ -486,6 +593,15 @@
   });
 
   /* ══ 13. Event listeners ═══════════════════════════════════ */
+
+  // Learning mode selector
+  document.querySelectorAll(".lmode-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      learningMode = btn.dataset.mode;
+      document.querySelectorAll(".lmode-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    });
+  });
 
   // Navbar
   EL.btnLogo.addEventListener("click",       () => showView("home"));
