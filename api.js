@@ -13,7 +13,7 @@
 
 const API = (() => {
 
-  const BASE = "http://localhost:4000";
+  const BASE = window.location.origin;
 
   /* ── helpers ── */
 
