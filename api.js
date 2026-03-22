@@ -1,35 +1,34 @@
 /**
  * api.js — EduAI v2  Frontend API Layer
  * ─────────────────────────────────────────────────────────────
- * All outbound calls go through YOUR Express server (server.js).
- * The server holds the secret keys for Grok and ElevenLabs.
- *
- * Endpoints consumed:
- *   POST /api/generate   → Grok AI   → structured lesson JSON
- *   POST /api/tts        → ElevenLabs → MP3 audio buffer
- *   GET  /api/health     → server status check
+ * Uses RELATIVE URLs so it works both locally AND on Render/any host.
+ * Never hardcode localhost — the server serves the frontend too.
  * ─────────────────────────────────────────────────────────────
  */
 
 const API = (() => {
 
-  const BASE = window.location.origin;
+  // RELATIVE base — works on localhost AND on Render/production
+  // Do NOT use "http://localhost:4000" — breaks on deployed server
+  const BASE = "";
 
-  /* ── helpers ── */
-
+  /* ── JSON parser — strips accidental markdown fences ── */
   const _json = (raw) => {
-    const clean = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
+    const clean = raw
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
     return JSON.parse(clean);
   };
 
   const _validate = (obj) => {
     ["topic","conversation","simple_explanation","questions","summary"].forEach((f) => {
-      if (!obj[f]) throw new Error(`AI response missing: "${f}"`);
+      if (!obj[f]) throw new Error(`AI response missing field: "${f}"`);
     });
   };
 
-  /* ── public ── */
-
+  /* ── Generate lesson ── */
   const generateLesson = async (text, onProgress) => {
     if (!text?.trim()) throw new Error("No text provided.");
     onProgress?.(10);
@@ -41,15 +40,15 @@ const API = (() => {
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ text: text.trim().slice(0, 8000) }),
       });
-    } catch {
-      throw new Error("Cannot reach the server. Run: node server.js");
+    } catch (err) {
+      throw new Error("Cannot reach the server. Make sure it is running.");
     }
 
     onProgress?.(55);
 
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
-      throw new Error(`Server error ${res.status}: ${e.error || "unknown"}`);
+      throw new Error(e.error || `Server error ${res.status}`);
     }
 
     const data = await res.json();
@@ -59,13 +58,14 @@ const API = (() => {
 
     let lesson;
     try { lesson = _json(data.result); }
-    catch { throw new Error("Server returned invalid JSON — try again."); }
+    catch { throw new Error("AI returned invalid format — please try again."); }
 
     _validate(lesson);
     onProgress?.(100);
     return lesson;
   };
 
+  /* ── Generate TTS audio ── */
   const generateAudio = async (lessonId, text) => {
     const res = await fetch(`${BASE}/api/tts`, {
       method:  "POST",
@@ -74,44 +74,80 @@ const API = (() => {
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
-      throw new Error(`TTS error ${res.status}: ${e.error || "unknown"}`);
+      throw new Error(e.error || `TTS error ${res.status}`);
     }
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   };
 
-  /* 🔥 NEW: Dual voice */
-  const generateDualAudio = async (conversation) => {
-    const res = await fetch(`${BASE}/api/tts-dual`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversation }),
-    });
-
-    if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      throw new Error(`Dual TTS error ${res.status}: ${e.error || "unknown"}`);
-    }
-
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
-  };
-
+  /* ── Health check ── */
   const health = async () => {
     try {
-      const res = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`${BASE}/api/health`, {
+        signal: AbortSignal.timeout(4000)
+      });
       return res.ok;
     } catch { return false; }
   };
 
-  const readText = (file) => new Promise((res, rej) => {
+  /* ── Read plain text file ── */
+  const readText = (file) => new Promise((resolve, reject) => {
     const r = new FileReader();
-    r.onload  = (e) => res(e.target.result || "");
-    r.onerror = ()  => rej(new Error("Could not read file."));
+    r.onload  = (e) => resolve(e.target.result || "");
+    r.onerror = ()  => reject(new Error("Could not read file."));
     r.readAsText(file);
   });
 
-  const readPDF = (file) => new Promise((res, rej) => {
+  /* ── Read PDF using pdf.js (proper extraction) ── */
+  const readPDF = (file) => new Promise((resolve, reject) => {
+    // Use pdf.js CDN for proper text extraction
+    const script = document.getElementById("pdfjs-script");
+    const load   = () => _extractPDF(file, resolve, reject);
+
+    if (window["pdfjs-dist/build/pdf"]) {
+      load();
+    } else if (!script) {
+      const s  = document.createElement("script");
+      s.id     = "pdfjs-script";
+      s.src    = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      s.onload = load;
+      s.onerror = () => {
+        // Fallback: basic ASCII extraction if pdf.js fails to load
+        _extractPDFBasic(file, resolve, reject);
+      };
+      document.head.appendChild(s);
+    } else {
+      // Script tag exists but not loaded yet — wait
+      script.addEventListener("load", load);
+    }
+  });
+
+  const _extractPDF = async (file, resolve, reject) => {
+    try {
+      const pdfjsLib = window["pdfjs-dist/build/pdf"];
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf         = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let   fullText    = "";
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page    = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items.map((item) => item.str).join(" ");
+        fullText += pageText + "\n";
+      }
+
+      const clean = fullText.replace(/\s+/g, " ").trim();
+      if (!clean) reject(new Error("No text found in PDF. Try pasting the text instead."));
+      else        resolve(clean);
+    } catch (err) {
+      reject(new Error("Failed to read PDF: " + err.message));
+    }
+  };
+
+  const _extractPDFBasic = (file, resolve, reject) => {
     const r = new FileReader();
     r.onload = (e) => {
       try {
@@ -122,14 +158,14 @@ const API = (() => {
           if (c >= 32 && c < 127) t += String.fromCharCode(c);
           else if (c === 10 || c === 13) t += " ";
         }
-        res(t.replace(/\s+/g, " ").trim());
-      } catch { rej(new Error("Could not parse PDF. Paste the text instead.")); }
+        resolve(t.replace(/\s+/g, " ").trim());
+      } catch { reject(new Error("Could not parse PDF. Paste the text instead.")); }
     };
-    r.onerror = () => rej(new Error("Could not read file."));
+    r.onerror = () => reject(new Error("Could not read file."));
     r.readAsArrayBuffer(file);
-  });
+  };
 
-  return { generateLesson, generateAudio, generateDualAudio, health, readText, readPDF };
+  return { generateLesson, generateAudio, health, readText, readPDF };
 })();
 
 window.API = API;
