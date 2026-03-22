@@ -3,7 +3,7 @@
  * ─────────────────────────────────────────────────────────────
  * Express server that:
  *   1. Serves the static frontend (index.html, css, js)
- *   2. POST /api/generate  — calls Grok AI (xAI)
+ *   2. POST /api/generate  — calls OpenRouter AI
  *   3. POST /api/tts       — calls ElevenLabs TTS
  *   4. GET  /api/lessons   — MongoDB: list all lessons
  *   5. POST /api/lessons   — MongoDB: save new lesson
@@ -11,11 +11,11 @@
  *   7. DELETE /api/lessons/:id — MongoDB: delete lesson
  *   8. GET  /api/health    — status check
  *
- * SETUP:
- *   npm install
- *   cp .env.example .env   → fill in all 3 keys
- *   node server.js
- *   Open → http://localhost:4000
+ * .env variables needed:
+ *   OPENROUTER_API_KEY   → from openrouter.ai
+ *   MONGO_URI            → from cloud.mongodb.com
+ *   ELEVENLABS_API_KEY   → from elevenlabs.io
+ *   ELEVENLABS_VOICE_ID_PROFESSOR (optional)
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -27,10 +27,9 @@ const mongoose   = require("mongoose");
 const OpenAI     = require("openai");
 const { ElevenLabsClient } = require("elevenlabs");
 const rateLimit  = require("express-rate-limit");
-const axios = require("axios");
 
 /* ══ Validate environment ══════════════════════════════════ */
-const REQUIRED_ENV = ["MONGO_URI", "ELEVENLABS_API_KEY"];
+const REQUIRED_ENV = ["OPENROUTER_API_KEY", "MONGO_URI", "ELEVENLABS_API_KEY"];
 REQUIRED_ENV.forEach((k) => {
   if (!process.env[k]) {
     console.error(`\n❌  Missing env var: ${k}`);
@@ -39,13 +38,15 @@ REQUIRED_ENV.forEach((k) => {
   }
 });
 
-/* ══ Grok client (OpenAI-compatible SDK) ═══════════════════ */
-const grok = process.env.GROK_API_KEY
-  ? new OpenAI({
-      apiKey: process.env.GROK_API_KEY,
-      baseURL: "https://api.x.ai/v1",
-    })
-  : null;
+/* ══ OpenRouter client (OpenAI-compatible) ═════════════════ */
+const aiClient = new OpenAI({
+  apiKey:  process.env.OPENROUTER_API_KEY,
+  baseURL: "https://openrouter.ai/api/v1",
+  defaultHeaders: {
+    "HTTP-Referer": "http://localhost:4000",
+    "X-Title":      "EduAI",
+  },
+});
 
 /* ══ ElevenLabs client ══════════════════════════════════════ */
 const eleven = new ElevenLabsClient({
@@ -131,69 +132,37 @@ app.use("/api/tts",      limiter);
 /* ══════════════════════════════════════════════════════════
    ROUTE: POST /api/generate
    Body:    { text: string }
-   Returns: { result: string }  (raw JSON string from Grok)
+   Returns: { result: string }  (raw JSON string from AI)
 ══════════════════════════════════════════════════════════ */
 app.post("/api/generate", async (req, res) => {
   const { text } = req.body;
   if (!text?.trim()) return res.status(400).json({ error: "text field is required." });
 
   const truncated = text.trim().slice(0, 8000);
-  console.log(`[/api/generate] ${truncated.length} chars → Grok`);
+  console.log(`[/api/generate] ${truncated.length} chars → OpenRouter`);
 
   try {
-  let result = "";
+    const completion = await aiClient.chat.completions.create({
+      model:      process.env.AI_MODEL || "meta-llama/llama-3.3-70b-instruct:free",
+      max_tokens:  4000,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user",   content: `Convert this academic content into a learning experience:\n\n${truncated}` },
+      ],
+    });
 
-  // 🔹 Try Grok first (if key exists)
-  if (grok) {
-    try {
-      const completion = await grok.chat.completions.create({
-        model: process.env.GROK_MODEL || "grok-2",
-        max_tokens: 4000,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: `Convert this academic content into a learning experience:\n\n${truncated}` },
-        ],
-      });
+    const result = completion.choices?.[0]?.message?.content || "";
+    if (!result) return res.status(502).json({ error: "AI returned empty response." });
 
-      result = completion.choices?.[0]?.message?.content || "";
-      console.log("✅ Grok success");
+    console.log(`[/api/generate] ✅ ${result.length} chars returned`);
+    return res.json({ result });
 
-    } catch (grokErr) {
-      console.log("⚠️ Grok failed, switching to OpenRouter...");
-    }
+  } catch (err) {
+    console.error("[/api/generate] AI error:", err.message);
+    if (err.status === 401) return res.status(401).json({ error: "Invalid OpenRouter API key. Check your .env file." });
+    if (err.status === 429) return res.status(429).json({ error: "Rate limit hit — wait a moment." });
+    return res.status(500).json({ error: err.message || "AI API error." });
   }
-
-  // 🔹 Fallback to OpenRouter
-  if (!result) {
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "openai/gpt-3.5-turbo",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: truncated }
-        ]
-      },
-      {
-        headers: {
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-
-    result = response.data.choices?.[0]?.message?.content || "";
-    console.log("✅ OpenRouter success");
-  }
-
-  if (!result) return res.status(502).json({ error: "AI returned empty response." });
-
-  return res.json({ result });
-
-} catch (err) {
-  console.error("[/api/generate] AI error:", err.message);
-  return res.status(500).json({ error: err.message || "AI error." });
-}
 });
 
 /* ══════════════════════════════════════════════════════════
@@ -201,39 +170,36 @@ app.post("/api/generate", async (req, res) => {
    Body:    { lessonId: string, text: string }
    Returns: audio/mpeg binary stream
 ══════════════════════════════════════════════════════════ */
-app.post("/api/tts-dual", async (req, res) => {
-  const { conversation } = req.body;
+app.post("/api/tts", async (req, res) => {
+  const { text } = req.body;
+  if (!text?.trim()) return res.status(400).json({ error: "text field is required." });
+
+  const voiceId = process.env.ELEVENLABS_VOICE_ID_PROFESSOR
+                || process.env.ELEVENLABS_VOICE_ID
+                || "JBFqnCBsd6RMkjVDRZzb"; // default: George
+
+  console.log(`[/api/tts] Generating audio (${text.length} chars)`);
 
   try {
-    const chunks = [];
-
-    for (const line of conversation) {
-      const voiceId =
-        line.speaker === "Student"
-          ? process.env.ELEVENLABS_VOICE_ID_STUDENT
-          : process.env.ELEVENLABS_VOICE_ID_PROFESSOR;
-
-      const audioStream = await eleven.textToSpeech.convertAsStream(
-        voiceId,
-        {
-          text: line.text.slice(0, 500),
-          model_id: "eleven_multilingual_v2"
-        }
-      );
-
-      for await (const chunk of audioStream) {
-        chunks.push(chunk);
-      }
-    }
-
-    const finalBuffer = Buffer.concat(chunks);
+    const audioStream = await eleven.textToSpeech.convertAsStream(voiceId, {
+      text:             text.slice(0, 3000),
+      model_id:         "eleven_multilingual_v2",
+      voice_settings:   { stability: 0.5, similarity_boost: 0.75 },
+      output_format:    "mp3_44100_128",
+    });
 
     res.setHeader("Content-Type", "audio/mpeg");
-    res.send(finalBuffer);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+
+    for await (const chunk of audioStream) {
+      res.write(chunk);
+    }
+    res.end();
+    console.log(`[/api/tts] ✅ Audio streamed`);
 
   } catch (err) {
-    console.error("Dual TTS error:", err.message);
-    res.status(500).json({ error: err.message });
+    console.error("[/api/tts] ElevenLabs error:", err.message);
+    return res.status(500).json({ error: err.message || "ElevenLabs TTS error." });
   }
 });
 
@@ -278,7 +244,7 @@ app.delete("/api/lessons/:id", async (req, res) => {
 app.get("/api/health", (_req, res) => {
   res.json({
     status:  "ok",
-    model:   process.env.GROK_MODEL || "grok-beta",
+    model:   process.env.AI_MODEL || "meta-llama/llama-3.3-70b-instruct:free",
     db:      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
   });
 });
