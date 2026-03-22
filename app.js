@@ -370,7 +370,51 @@
     }
   };
 
-  /* ══ 11. TTS flow ══════════════════════════════════════════ */
+  /* ══ 11. TTS flow — ElevenLabs with Web Speech fallback ═══ */
+
+  // Web Speech API fallback (free, built into every browser)
+  const speakWithBrowser = (text) => {
+    if (!window.speechSynthesis) {
+      toast("⚠️ Your browser does not support speech synthesis.");
+      return;
+    }
+    window.speechSynthesis.cancel(); // stop any previous speech
+
+    // Split into chunks (speechSynthesis has a ~200 char limit per utterance)
+    const CHUNK = 200;
+    const chunks = [];
+    for (let i = 0; i < text.length; i += CHUNK) chunks.push(text.slice(i, i + CHUNK));
+
+    let idx = 0;
+    const speakNext = () => {
+      if (idx >= chunks.length) {
+        EL.audioPlay.textContent = "▶";
+        EL.audioLabel.textContent = "Playback complete";
+        return;
+      }
+      const utt       = new SpeechSynthesisUtterance(chunks[idx++]);
+      utt.rate        = 0.95;
+      utt.pitch       = 1.0;
+      utt.onend       = speakNext;
+      utt.onerror     = () => {};
+      // Pick a natural voice if available
+      const voices    = window.speechSynthesis.getVoices();
+      const preferred = voices.find(v => v.lang.startsWith("en") && v.name.includes("Google"))
+                     || voices.find(v => v.lang.startsWith("en"))
+                     || voices[0];
+      if (preferred) utt.voice = preferred;
+      window.speechSynthesis.speak(utt);
+    };
+
+    EL.audioBar.hidden    = false;
+    EL.audioLabel.textContent = "Speaking (browser voice)…";
+    EL.audioPlay.textContent  = "⏸";
+    speakNext();
+  };
+
+  // Toggle browser speech play/pause
+  let browserSpeaking = false;
+
   const handleTTS = async () => {
     if (!current) return;
     const btn = document.getElementById("btnTTS");
@@ -383,28 +427,52 @@
       DB.patch(current.localId, { audioUrl: url });
       current.audioUrl = url;
 
-      EL.audioBar.hidden    = false;
-      EL.audioEl.src        = url;
-      EL.audioLabel.textContent = "Podcast audio ready";
+      EL.audioBar.hidden        = false;
+      EL.audioEl.src            = url;
+      EL.audioLabel.textContent = "Podcast audio ready ✨";
+      renderTab("visual");
 
-      renderTab("visual"); // re-render to show "audio ready" message
     } catch (err) {
-      toast("🔊 TTS error: " + err.message);
-      if (btn) { btn.disabled = false; btn.textContent = "🔊 Generate Spoken Audio (ElevenLabs)"; }
+      console.warn("ElevenLabs failed, using browser speech:", err.message);
+
+      // Use free browser TTS as fallback
+      const scriptText = (current.audio_script?.professor || []).join(" ");
+      if (scriptText && window.speechSynthesis) {
+        toast("🔊 ElevenLabs unavailable — using your browser's built-in voice instead.");
+        speakWithBrowser(scriptText);
+        if (btn) { btn.textContent = "🔊 Playing (browser voice)"; }
+      } else {
+        toast("🔊 Audio unavailable: " + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = "🔊 Generate Spoken Audio (ElevenLabs)"; }
+      }
     }
   };
 
-  /* ══ 12. Audio player ══════════════════════════════════════ */
+  /* ══ 12. Audio player ═══════════════════════════════════════ */
   let audioPlaying = false;
   EL.audioPlay.addEventListener("click", () => {
-    if (audioPlaying) {
-      EL.audioEl.pause();
-      EL.audioPlay.textContent = "▶";
-      audioPlaying = false;
-    } else {
-      EL.audioEl.play();
-      EL.audioPlay.textContent = "⏸";
-      audioPlaying = true;
+    // Handle ElevenLabs audio element
+    if (current?.audioUrl && EL.audioEl.src) {
+      if (audioPlaying) {
+        EL.audioEl.pause();
+        EL.audioPlay.textContent = "▶";
+        audioPlaying = false;
+      } else {
+        EL.audioEl.play();
+        EL.audioPlay.textContent = "⏸";
+        audioPlaying = true;
+      }
+      return;
+    }
+    // Handle browser speech synthesis
+    if (window.speechSynthesis) {
+      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+        window.speechSynthesis.pause();
+        EL.audioPlay.textContent = "▶";
+      } else if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        EL.audioPlay.textContent = "⏸";
+      }
     }
   });
   EL.audioEl.addEventListener("timeupdate", () => {
