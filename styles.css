@@ -361,3 +361,146 @@ textarea, input { font-family: var(--font-body); }
   .audio-script { grid-template-columns: 1fr; }
   .lesson-header { flex-wrap: wrap; }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   NEW: Learning Mode Selector
+   ═══════════════════════════════════════════════════════════ */
+.mode-selector-wrap {
+  max-width: 680px; margin: 0 auto 24px; text-align: center;
+}
+.mode-selector-label {
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  margin-bottom: 12px; letter-spacing: 0.3px;
+}
+.mode-selector {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+.lmode-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 14px 10px; border-radius: var(--r-md);
+  background: var(--card); border: 2px solid var(--border);
+  cursor: pointer; transition: all var(--ease); position: relative;
+}
+.lmode-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  transform: translateY(-1px);
+}
+.lmode-btn.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--card));
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.lmode-icon { font-size: 24px; line-height: 1; }
+.lmode-name { font-size: 14px; font-weight: 700; color: var(--text); }
+.lmode-desc { font-size: 11px; color: var(--muted); }
+.lmode-btn.active .lmode-name { color: var(--accent); }
+.lmode-btn.active::after {
+  content: "✓";
+  position: absolute; top: 6px; right: 8px;
+  font-size: 11px; color: var(--accent); font-weight: 800;
+}
+
+/* Mode colours per type */
+.lmode-btn[data-mode="kids"].active    { border-color: var(--teal);   background: color-mix(in srgb, var(--teal)   10%, var(--card)); box-shadow: 0 0 0 1px var(--teal); }
+.lmode-btn[data-mode="kids"].active .lmode-name    { color: var(--teal); }
+.lmode-btn[data-mode="kids"].active::after         { color: var(--teal); }
+.lmode-btn[data-mode="exam"].active    { border-color: var(--gold);   background: color-mix(in srgb, var(--gold)   10%, var(--card)); box-shadow: 0 0 0 1px var(--gold); }
+.lmode-btn[data-mode="exam"].active .lmode-name    { color: var(--gold); }
+.lmode-btn[data-mode="exam"].active::after         { color: var(--gold); }
+
+/* Lesson mode badge (shown next to title) */
+.lesson-header__info { display: flex; flex-direction: column; gap: 4px; }
+.lesson-header__meta { display: flex; align-items: center; gap: 10px; }
+.lesson-mode-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 10px; border-radius: var(--r-full);
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  border: 1px solid;
+}
+.lesson-mode-badge.mode-student { color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+.lesson-mode-badge.mode-kids    { color: var(--teal);   background: color-mix(in srgb, var(--teal)   14%, transparent); border-color: color-mix(in srgb, var(--teal)   30%, transparent); }
+.lesson-mode-badge.mode-exam    { color: var(--gold);   background: color-mix(in srgb, var(--gold)   14%, transparent); border-color: color-mix(in srgb, var(--gold)   30%, transparent); }
+
+/* ═══════════════════════════════════════════════════════════
+   NEW: Cheat Sheet
+   ═══════════════════════════════════════════════════════════ */
+.cheatsheet {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-lg); overflow: hidden;
+}
+.cheatsheet__header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 24px; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 8%, var(--card));
+}
+.cheatsheet__header-left { display: flex; align-items: center; gap: 10px; }
+.cheatsheet__icon { font-size: 22px; }
+.cheatsheet__title { font-family: var(--font-head); font-size: 18px; font-weight: 800; color: var(--text); }
+.cheatsheet__topic { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.cheatsheet__download {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 16px; border-radius: var(--r-sm);
+  background: var(--accent); color: #fff; border: none;
+  font-size: 13px; font-weight: 700; cursor: pointer;
+  transition: all var(--ease); font-family: var(--font-body);
+}
+.cheatsheet__download:hover { background: color-mix(in srgb, var(--accent) 82%, #fff); }
+
+.cheatsheet__body { padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+
+.cs-section { }
+.cs-section__title {
+  font-size: 11px; font-weight: 700; letter-spacing: 1px;
+  text-transform: uppercase; color: var(--muted);
+  margin-bottom: 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.cs-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.cs-pill {
+  padding: 6px 14px; border-radius: var(--r-full);
+  font-size: 13px; font-weight: 500; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border);
+}
+.cs-pill.accent { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.cs-pill.teal   { color: var(--teal);   background: color-mix(in srgb, var(--teal)   12%, transparent); border-color: color-mix(in srgb, var(--teal)   28%, transparent); }
+.cs-pill.gold   { color: var(--gold);   background: color-mix(in srgb, var(--gold)   12%, transparent); border-color: color-mix(in srgb, var(--gold)   28%, transparent); }
+
+.cs-rows { display: flex; flex-direction: column; gap: 8px; }
+.cs-row {
+  display: grid; grid-template-columns: 1fr 2fr; gap: 14px;
+  padding: 10px 14px; border-radius: var(--r-sm);
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 13px; line-height: 1.5;
+}
+.cs-row__q { color: var(--accent); font-weight: 600; }
+.cs-row__a { color: var(--text); }
+
+.cs-bullets { display: flex; flex-direction: column; gap: 7px; }
+.cs-bullet {
+  display: flex; gap: 10px; align-items: flex-start;
+  font-size: 13px; color: var(--text); line-height: 1.55;
+}
+.cs-bullet::before {
+  content: "▸"; color: var(--accent); font-size: 12px;
+  flex-shrink: 0; margin-top: 2px;
+}
+
+.cs-formula-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.cs-formula {
+  padding: 12px 14px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  border-left: 3px solid var(--gold);
+}
+.cs-formula__label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.cs-formula__value { font-family: var(--font-body); font-size: 14px; font-weight: 600; color: var(--gold); }
+
+.cheatsheet__print-note {
+  text-align: center; font-size: 12px; color: var(--muted);
+  padding: 12px; border-top: 1px solid var(--border);
+}
+
+@media print {
+  .navbar, .tab-bar, .audio-bar, .back-btn, .cheatsheet__download, .footer { display: none !important; }
+  .cheatsheet { border: none; }
+  body { background: white; color: black; }
+}
