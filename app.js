@@ -336,12 +336,16 @@
   const handleGenerate = async (text) => {
     if (!text?.trim()) return;
     startProgress();
-    EL.btnGenerate.disabled     = true;
-    EL.btnGenerate.innerHTML    = `<span class="spin"></span> Processing…`;
+    EL.btnGenerate.disabled  = true;
+    EL.btnGenerate.innerHTML = `<span class="spin"></span> Processing…`;
 
     try {
       const lesson = await API.generateLesson(text, (pct) => {
         EL.navProgressFill.style.width = `${pct}%`;
+        // Show retrying message when server is retrying Gemini
+        if (pct === 55) {
+          EL.btnGenerate.innerHTML = `<span class="spin"></span> Thinking…`;
+        }
       });
       lesson.localId   = `lesson_${Date.now()}`;
       lesson.createdAt = Date.now();
@@ -352,7 +356,13 @@
       refreshNav();
       openLesson(lesson);
     } catch (err) {
-      toast("⚠️ " + (err.message || "Failed to generate lesson."));
+      const msg = err.message || "Failed to generate lesson.";
+      // Friendly message for rate limit
+      if (msg.includes("503") || msg.includes("busy") || msg.includes("rate")) {
+        toast("⏳ Gemini is busy — the server is retrying automatically. Please wait 30 seconds and try again.");
+      } else {
+        toast("⚠️ " + msg);
+      }
     } finally {
       endProgress();
       EL.btnGenerate.disabled  = !EL.inputText.value.trim();
@@ -360,40 +370,29 @@
     }
   };
 
-/* ══ 11. TTS flow ══════════════════════════════════════════ */
-const handleTTS = async () => {
-  if (!current) return;
+  /* ══ 11. TTS flow ══════════════════════════════════════════ */
+  const handleTTS = async () => {
+    if (!current) return;
+    const btn = document.getElementById("btnTTS");
+    if (btn) { btn.disabled = true; btn.textContent = "Generating audio…"; }
 
-  const btn = document.getElementById("btnTTS");
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "Generating audio…";
-  }
+    try {
+      const scriptText = (current.audio_script?.professor || []).join(" ");
+      const url = await API.generateAudio(current.localId, scriptText);
 
-  try {
-    // 🔥 UPDATED: dual voice call
-    const url = await API.generateDualAudio(current.conversation);
+      DB.patch(current.localId, { audioUrl: url });
+      current.audioUrl = url;
 
-    DB.patch(current.localId, { audioUrl: url });
-    current.audioUrl = url;
+      EL.audioBar.hidden    = false;
+      EL.audioEl.src        = url;
+      EL.audioLabel.textContent = "Podcast audio ready";
 
-    EL.audioBar.hidden = false;
-    EL.audioEl.src = url;
-
-    EL.audioLabel.textContent = "Podcast audio ready";
-
-    renderTab("visual");
-
-  } catch (err) {
-    console.error("TTS ERROR:", err);
-    toast("🔊 TTS error: " + err.message);
-
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "🔊 Generate Spoken Audio (ElevenLabs)";
+      renderTab("visual"); // re-render to show "audio ready" message
+    } catch (err) {
+      toast("🔊 TTS error: " + err.message);
+      if (btn) { btn.disabled = false; btn.textContent = "🔊 Generate Spoken Audio (ElevenLabs)"; }
     }
-  }
-};
+  };
 
   /* ══ 12. Audio player ══════════════════════════════════════ */
   let audioPlaying = false;
