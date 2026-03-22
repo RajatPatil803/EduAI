@@ -3,7 +3,7 @@
  * ─────────────────────────────────────────────────────────────
  * Express server that:
  *   1. Serves the static frontend (index.html, css, js)
- *   2. POST /api/generate  — calls OpenRouter AI
+ *   2. POST /api/generate  — calls Google Gemini (FREE, no card)
  *   3. POST /api/tts       — calls ElevenLabs TTS
  *   4. GET  /api/lessons   — MongoDB: list all lessons
  *   5. POST /api/lessons   — MongoDB: save new lesson
@@ -12,9 +12,9 @@
  *   8. GET  /api/health    — status check
  *
  * .env variables needed:
- *   OPENROUTER_API_KEY   → from openrouter.ai
- *   MONGO_URI            → from cloud.mongodb.com
- *   ELEVENLABS_API_KEY   → from elevenlabs.io
+ *   GEMINI_API_KEY        → from aistudio.google.com (FREE, no card)
+ *   MONGO_URI             → from cloud.mongodb.com
+ *   ELEVENLABS_API_KEY    → from elevenlabs.io
  *   ELEVENLABS_VOICE_ID_PROFESSOR (optional)
  * ─────────────────────────────────────────────────────────────
  */
@@ -24,12 +24,11 @@ const express    = require("express");
 const cors       = require("cors");
 const path       = require("path");
 const mongoose   = require("mongoose");
-const OpenAI     = require("openai");
 const { ElevenLabsClient } = require("elevenlabs");
 const rateLimit  = require("express-rate-limit");
 
 /* ══ Validate environment ══════════════════════════════════ */
-const REQUIRED_ENV = ["OPENROUTER_API_KEY", "MONGO_URI", "ELEVENLABS_API_KEY"];
+const REQUIRED_ENV = ["GEMINI_API_KEY", "MONGO_URI", "ELEVENLABS_API_KEY"];
 REQUIRED_ENV.forEach((k) => {
   if (!process.env[k]) {
     console.error(`\n❌  Missing env var: ${k}`);
@@ -38,15 +37,9 @@ REQUIRED_ENV.forEach((k) => {
   }
 });
 
-/* ══ OpenRouter client (OpenAI-compatible) ═════════════════ */
-const aiClient = new OpenAI({
-  apiKey:  process.env.OPENROUTER_API_KEY,
-  baseURL: "https://openrouter.ai/api/v1",
-  defaultHeaders: {
-    "HTTP-Referer": "http://localhost:4000",
-    "X-Title":      "EduAI",
-  },
-});
+/* ══ Google Gemini client ═══════════════════════════════════ */
+// Uses fetch directly — no extra SDK needed, works with the free REST API
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
 /* ══ ElevenLabs client ══════════════════════════════════════ */
 const eleven = new ElevenLabsClient({
@@ -82,7 +75,7 @@ const lessonSchema = new mongoose.Schema({
 
 const Lesson = mongoose.model("Lesson", lessonSchema);
 
-/* ══ System prompt for Grok ════════════════════════════════ */
+/* ══ System Prompt ═════════════════════════════════════════ */
 const SYSTEM_PROMPT = `You are an intelligent educational AI. Given academic text, generate a structured JSON learning experience.
 
 Return ONLY valid JSON — no markdown fences, no preamble, no extra text:
@@ -114,7 +107,7 @@ Rules:
 - questions: basic=recall, medium=comprehension, advanced=application
 - summary: exactly 5 bullet strings
 - visual_suggestions: 3-6 items with timestamps like "0:15"
-- Return ONLY the JSON object`;
+- Return ONLY the JSON object, nothing else`;
 
 /* ══ Express app ════════════════════════════════════════════ */
 const app  = express();
@@ -122,46 +115,67 @@ const PORT = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json({ limit: "100kb" }));
-app.use(express.static(path.join(__dirname)));  // serve frontend
+app.use(express.static(path.join(__dirname)));
 
 /* ── Rate limiting ── */
-const limiter = rateLimit({ windowMs: 60_000, max: 20, message: { error: "Too many requests — wait a minute." } });
+const limiter = rateLimit({
+  windowMs: 60_000, max: 20,
+  message: { error: "Too many requests — wait a minute." }
+});
 app.use("/api/generate", limiter);
 app.use("/api/tts",      limiter);
 
 /* ══════════════════════════════════════════════════════════
    ROUTE: POST /api/generate
    Body:    { text: string }
-   Returns: { result: string }  (raw JSON string from AI)
+   Returns: { result: string }  (raw JSON string from Gemini)
 ══════════════════════════════════════════════════════════ */
 app.post("/api/generate", async (req, res) => {
   const { text } = req.body;
   if (!text?.trim()) return res.status(400).json({ error: "text field is required." });
 
   const truncated = text.trim().slice(0, 8000);
-  console.log(`[/api/generate] ${truncated.length} chars → OpenRouter`);
+  console.log(`[/api/generate] ${truncated.length} chars → Gemini`);
 
   try {
-    const completion = await aiClient.chat.completions.create({
-      model:      process.env.AI_MODEL || "meta-llama/llama-3.3-70b-instruct:free",
-      max_tokens:  4000,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user",   content: `Convert this academic content into a learning experience:\n\n${truncated}` },
-      ],
+    const response = await fetch(GEMINI_API_URL, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: {
+          parts: [{ text: SYSTEM_PROMPT }]
+        },
+        contents: [{
+          parts: [{ text: `Convert this academic content into a learning experience:\n\n${truncated}` }]
+        }],
+        generationConfig: {
+          temperature:     0.7,
+          maxOutputTokens: 4000,
+        }
+      })
     });
 
-    const result = completion.choices?.[0]?.message?.content || "";
-    if (!result) return res.status(502).json({ error: "AI returned empty response." });
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      const status  = response.status;
+      console.error("[/api/generate] Gemini error:", status, errData);
+      if (status === 400) return res.status(400).json({ error: "Bad request to Gemini API." });
+      if (status === 401 || status === 403) return res.status(401).json({ error: "Invalid Gemini API key. Check your .env file — GEMINI_API_KEY." });
+      if (status === 429) return res.status(429).json({ error: "Gemini free tier rate limit hit. Wait 60 seconds and try again." });
+      return res.status(500).json({ error: `Gemini API error ${status}` });
+    }
+
+    const data   = await response.json();
+    const result = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    if (!result) return res.status(502).json({ error: "Gemini returned empty response." });
 
     console.log(`[/api/generate] ✅ ${result.length} chars returned`);
     return res.json({ result });
 
   } catch (err) {
-    console.error("[/api/generate] AI error:", err.message);
-    if (err.status === 401) return res.status(401).json({ error: "Invalid OpenRouter API key. Check your .env file." });
-    if (err.status === 429) return res.status(429).json({ error: "Rate limit hit — wait a moment." });
-    return res.status(500).json({ error: err.message || "AI API error." });
+    console.error("[/api/generate] Network error:", err.message);
+    return res.status(500).json({ error: err.message || "Failed to reach Gemini API." });
   }
 });
 
@@ -182,18 +196,16 @@ app.post("/api/tts", async (req, res) => {
 
   try {
     const audioStream = await eleven.textToSpeech.convertAsStream(voiceId, {
-      text:             text.slice(0, 3000),
-      model_id:         "eleven_multilingual_v2",
-      voice_settings:   { stability: 0.5, similarity_boost: 0.75 },
-      output_format:    "mp3_44100_128",
+      text:            text.slice(0, 3000),
+      model_id:        "eleven_multilingual_v2",
+      voice_settings:  { stability: 0.5, similarity_boost: 0.75 },
+      output_format:   "mp3_44100_128",
     });
 
-    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Type",  "audio/mpeg");
     res.setHeader("Cache-Control", "public, max-age=86400");
 
-    for await (const chunk of audioStream) {
-      res.write(chunk);
-    }
+    for await (const chunk of audioStream) { res.write(chunk); }
     res.end();
     console.log(`[/api/tts] ✅ Audio streamed`);
 
@@ -207,7 +219,6 @@ app.post("/api/tts", async (req, res) => {
    ROUTES: /api/lessons  (MongoDB CRUD)
 ══════════════════════════════════════════════════════════ */
 
-// GET — list all lessons newest-first
 app.get("/api/lessons", async (_req, res) => {
   try {
     const lessons = await Lesson.find().sort({ createdAt: -1 }).lean();
@@ -215,7 +226,6 @@ app.get("/api/lessons", async (_req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// POST — create new lesson
 app.post("/api/lessons", async (req, res) => {
   try {
     const lesson = await Lesson.create(req.body);
@@ -223,7 +233,6 @@ app.post("/api/lessons", async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// PUT — update existing lesson
 app.put("/api/lessons/:id", async (req, res) => {
   try {
     const lesson = await Lesson.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -232,7 +241,6 @@ app.put("/api/lessons/:id", async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-// DELETE — remove lesson
 app.delete("/api/lessons/:id", async (req, res) => {
   try {
     await Lesson.findByIdAndDelete(req.params.id);
@@ -243,9 +251,9 @@ app.delete("/api/lessons/:id", async (req, res) => {
 /* ── Health check ── */
 app.get("/api/health", (_req, res) => {
   res.json({
-    status:  "ok",
-    model:   process.env.AI_MODEL || "meta-llama/llama-3.3-70b-instruct:free",
-    db:      mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    status: "ok",
+    ai:     "Google Gemini 2.0 Flash (free)",
+    db:     mongoose.connection.readyState === 1 ? "connected" : "disconnected",
   });
 });
 
