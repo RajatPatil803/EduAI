@@ -29,7 +29,7 @@ const API = (() => {
   };
 
   /* ── Generate lesson ── */
-  const generateLesson = async (text, onProgress) => {
+  const generateLesson = async (text, onProgress, mode = "student") => {
     if (!text?.trim()) throw new Error("No text provided.");
     onProgress?.(10);
 
@@ -38,7 +38,7 @@ const API = (() => {
       res = await fetch(`${BASE}/api/generate`, {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify({ text: text.trim().slice(0, 8000) }),
+        body:    JSON.stringify({ text: text.trim().slice(0, 8000), mode }),
       });
     } catch (err) {
       throw new Error("Cannot reach the server. Make sure it is running.");
