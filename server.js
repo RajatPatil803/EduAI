@@ -226,6 +226,17 @@ app.post("/api/tts", async (req, res) => {
     console.log("[/api/tts] ✅ Audio streamed");
   } catch (err) {
     console.error("[/api/tts]", err.message);
+    const statusCode = err.statusCode || err.status || 500;
+    if (statusCode === 401) {
+      return res.status(401).json({
+        error: "ElevenLabs API key is invalid or expired. Please regenerate your key at elevenlabs.io and update ELEVENLABS_API_KEY in your Render environment variables."
+      });
+    }
+    if (statusCode === 429) {
+      return res.status(429).json({
+        error: "ElevenLabs monthly character limit reached. Regenerate or upgrade your account at elevenlabs.io."
+      });
+    }
     res.status(500).json({ error: err.message || "ElevenLabs TTS error." });
   }
 });
