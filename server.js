@@ -129,7 +129,55 @@ app.use("/api/tts",      limiter);
    ROUTE: POST /api/generate
    Body:    { text: string }
    Returns: { result: string }  (raw JSON string from Gemini)
+   Auto-retries up to 3 times on 429 rate limit with backoff.
 ══════════════════════════════════════════════════════════ */
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const callGemini = async (prompt, retries = 3, delayMs = 10000) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const response = await fetch(GEMINI_API_URL, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 4000 }
+      })
+    });
+
+    // Success path
+    if (response.ok) {
+      const data   = await response.json();
+      const result = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+      return { ok: true, result };
+    }
+
+    const status  = response.status;
+    const errData = await response.json().catch(() => ({}));
+
+    // Rate limited — wait and retry automatically
+    if (status === 429) {
+      // Check if Gemini sends a retryDelay hint
+      const retryAfterSec = errData?.error?.details
+        ?.find(d => d["@type"]?.includes("RetryInfo"))
+        ?.retryDelay?.replace("s","") || null;
+      const waitMs = retryAfterSec ? parseInt(retryAfterSec) * 1000 : delayMs * attempt;
+      console.log(`[Gemini] Rate limit hit. Waiting ${waitMs/1000}s before retry ${attempt}/${retries}…`);
+      await sleep(waitMs);
+      continue; // retry
+    }
+
+    // Hard failures — don't retry
+    if (status === 400) return { ok: false, status: 400, error: "Bad request to Gemini." };
+    if (status === 401 || status === 403) return { ok: false, status: 401, error: "Invalid Gemini API key — check GEMINI_API_KEY in your .env file." };
+    return { ok: false, status: 500, error: `Gemini API error ${status}` };
+  }
+
+  // All retries exhausted
+  return { ok: false, status: 503, error: "Gemini is busy right now. Please wait 1 minute and try again." };
+};
+
 app.post("/api/generate", async (req, res) => {
   const { text } = req.body;
   if (!text?.trim()) return res.status(400).json({ error: "text field is required." });
@@ -138,35 +186,13 @@ app.post("/api/generate", async (req, res) => {
   console.log(`[/api/generate] ${truncated.length} chars → Gemini`);
 
   try {
-    const response = await fetch(GEMINI_API_URL, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: SYSTEM_PROMPT }]
-        },
-        contents: [{
-          parts: [{ text: `Convert this academic content into a learning experience:\n\n${truncated}` }]
-        }],
-        generationConfig: {
-          temperature:     0.7,
-          maxOutputTokens: 4000,
-        }
-      })
-    });
+    const prompt = `Convert this academic content into a learning experience:\n\n${truncated}`;
+    const { ok, result, status, error } = await callGemini(prompt);
 
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      const status  = response.status;
-      console.error("[/api/generate] Gemini error:", status, errData);
-      if (status === 400) return res.status(400).json({ error: "Bad request to Gemini API." });
-      if (status === 401 || status === 403) return res.status(401).json({ error: "Invalid Gemini API key. Check your .env file — GEMINI_API_KEY." });
-      if (status === 429) return res.status(429).json({ error: "Gemini free tier rate limit hit. Wait 60 seconds and try again." });
-      return res.status(500).json({ error: `Gemini API error ${status}` });
+    if (!ok) {
+      console.error(`[/api/generate] Failed: ${error}`);
+      return res.status(status || 500).json({ error });
     }
-
-    const data   = await response.json();
-    const result = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
     if (!result) return res.status(502).json({ error: "Gemini returned empty response." });
 
@@ -175,7 +201,7 @@ app.post("/api/generate", async (req, res) => {
 
   } catch (err) {
     console.error("[/api/generate] Network error:", err.message);
-    return res.status(500).json({ error: err.message || "Failed to reach Gemini API." });
+    return res.status(500).json({ error: "Failed to reach Gemini API. Check your internet connection." });
   }
 });
 
