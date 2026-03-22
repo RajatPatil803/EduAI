@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EduAI — Learn Smarter</title>
-  <meta name="description" content="Turn any PDF into a podcast dialogue, quiz, summary and audio — powered by Grok AI." />
+  <meta name="description" content="Turn any PDF into a podcast dialogue, quiz, summary and audio — powered by Gemini AI." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
@@ -43,12 +43,34 @@
     <!-- ─── VIEW: HOME ─── -->
     <section class="view" id="viewHome">
       <div class="hero">
-        <div class="hero__pill">⚡ Grok · MongoDB · ElevenLabs · Antigravity</div>
+        <div class="hero__pill">⚡ Gemini · MongoDB · ElevenLabs · Antigravity</div>
         <h1 class="hero__title">Turn Any PDF Into a<br/>Learning Experience</h1>
-        <p class="hero__sub">Paste text or upload a PDF. Get a podcast dialogue, quiz, visual map and spoken audio — instantly.</p>
+        <p class="hero__sub">Paste text or upload a PDF. Get a podcast dialogue, quiz, cheat sheet and spoken audio — instantly.</p>
       </div>
 
-      <!-- Mode toggle -->
+      <!-- ── LEARNING MODE SELECTOR ── -->
+      <div class="mode-selector-wrap">
+        <p class="mode-selector-label">🎓 Learning Mode</p>
+        <div class="mode-selector" id="learningModeSelector">
+          <button class="lmode-btn active" data-mode="student">
+            <span class="lmode-icon">🎒</span>
+            <span class="lmode-name">Student</span>
+            <span class="lmode-desc">Balanced depth</span>
+          </button>
+          <button class="lmode-btn" data-mode="kids">
+            <span class="lmode-icon">🧸</span>
+            <span class="lmode-name">Kids</span>
+            <span class="lmode-desc">Simple & fun</span>
+          </button>
+          <button class="lmode-btn" data-mode="exam">
+            <span class="lmode-icon">📝</span>
+            <span class="lmode-name">Exam</span>
+            <span class="lmode-desc">Deep & precise</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Input mode toggle -->
       <div class="mode-toggle">
         <button class="mode-btn active" id="modePaste" data-mode="paste">📝 Paste Text</button>
         <button class="mode-btn" id="modeFile" data-mode="file">📄 Upload PDF</button>
@@ -105,9 +127,12 @@
     <section class="view" id="viewLesson" hidden>
       <div class="lesson-header">
         <button class="back-btn" id="btnBack">← Back</button>
-        <div>
+        <div class="lesson-header__info">
           <h1 class="lesson-header__title" id="lessonTitle">Lesson</h1>
-          <p class="lesson-header__date" id="lessonDate"></p>
+          <div class="lesson-header__meta">
+            <p class="lesson-header__date" id="lessonDate"></p>
+            <span class="lesson-mode-badge" id="lessonModeBadge"></span>
+          </div>
         </div>
       </div>
 
@@ -121,15 +146,15 @@
         <audio id="audioEl"></audio>
       </div>
 
-      <!-- Tabs -->
+      <!-- Tabs — now includes Cheat Sheet -->
       <div class="tab-bar" role="tablist">
         <button class="tab-pill active" data-tab="conversation" role="tab">💬 Dialogue</button>
         <button class="tab-pill" data-tab="quiz"         role="tab">🧠 Quiz</button>
+        <button class="tab-pill" data-tab="cheatsheet"   role="tab">📄 Cheat Sheet</button>
         <button class="tab-pill" data-tab="summary"      role="tab">📋 Summary</button>
         <button class="tab-pill" data-tab="visual"       role="tab">🗺️ Visual Map</button>
       </div>
 
-      <!-- Tab panels rendered by app.js -->
       <div id="tabPanel"></div>
     </section>
 
@@ -138,15 +163,13 @@
   <!-- ═══════════════ FOOTER ═══════════════ -->
   <footer class="footer">
     <div class="footer__inner">
-      <span>⚡ EduAI v2 — Grok · MongoDB · ElevenLabs · Antigravity</span>
+      <span>⚡ EduAI v2 — Gemini · MongoDB · ElevenLabs · Antigravity</span>
       <span id="footerStatus">●  Server offline</span>
     </div>
   </footer>
 
-  <!-- Scripts -->
   <script src="db.js"></script>
   <script src="api.js"></script>
   <script src="app.js"></script>
-
 </body>
 </html>
