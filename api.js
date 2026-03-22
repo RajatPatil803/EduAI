@@ -12,13 +12,27 @@ const API = (() => {
   // Do NOT use "http://localhost:4000" — breaks on deployed server
   const BASE = "";
 
-  /* ── JSON parser — strips accidental markdown fences ── */
+  /* ── JSON parser — robust extraction from any AI response ── */
   const _json = (raw) => {
-    const clean = raw
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/```\s*$/i, "")
+    // Strategy 1: strip markdown fences then parse
+    let clean = raw
+      .replace(/^```json\s*/im, "")
+      .replace(/^```\s*/im, "")
+      .replace(/```\s*$/im, "")
       .trim();
+
+    // Strategy 2: find the first { and last } — extract just the JSON object
+    // This handles cases where Gemini adds preamble text before or after the JSON
+    const firstBrace = clean.indexOf("{");
+    const lastBrace  = clean.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      clean = clean.slice(firstBrace, lastBrace + 1);
+    }
+
+    // Strategy 3: fix common JSON issues Gemini introduces
+    // Remove trailing commas before } or ]  (invalid JSON)
+    clean = clean.replace(/,\s*([}\]])/g, "$1");
+
     return JSON.parse(clean);
   };
 
@@ -26,6 +40,12 @@ const API = (() => {
     ["topic","conversation","simple_explanation","questions","summary"].forEach((f) => {
       if (!obj[f]) throw new Error(`AI response missing field: "${f}"`);
     });
+    // Ensure cheatsheet exists (may be missing in older lessons)
+    if (!obj.cheatsheet) {
+      obj.cheatsheet = {
+        key_terms: [], core_concepts: [], quick_qa: [], formulas: [], memory_tips: []
+      };
+    }
   };
 
   /* ── Generate lesson ── */
