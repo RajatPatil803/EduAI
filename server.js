@@ -18,9 +18,9 @@ const rateLimit  = require("express-rate-limit");
 
 /* ══ Gemini models (cascade on rate limit) ═════════════════ */
 const MODELS = [
-  "gemini-2.5-flash-lite-preview-06-17",
-  "gemini-1.5-flash",
-  "gemini-2.5-flash",
+  "gemini-1.5-flash",        // stable, 15 RPM, 1500 RPD free
+  "gemini-1.5-flash-8b",     // fastest fallback, 15 RPM free
+  "gemini-2.0-flash",        // newest stable fallback
 ];
 const geminiUrl = (m) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${process.env.GEMINI_API_KEY}`;
@@ -90,27 +90,24 @@ const buildPrompt = (mode = "student") => {
 
 Return ONLY valid JSON — no markdown fences, no preamble:
 {
-  "topic": "concise topic name (max 60 chars)",
-  "conversation": [
-    {"speaker":"Student","text":"..."},
-    {"speaker":"Professor","text":"..."}
-  ],
-  "simple_explanation": "2-4 sentence plain-language explanation with analogy",
+  "topic": "string",
+  "conversation": [{"speaker":"Student","text":"..."},{"speaker":"Professor","text":"..."}],
+  "simple_explanation": "string",
   "questions": {
     "basic":    [{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}],
     "medium":   [{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}],
     "advanced": [{"q":"...","a":"..."},{"q":"...","a":"..."}]
   },
-  "summary": ["point 1","point 2","point 3","point 4","point 5"],
+  "summary": ["string","string","string","string","string"],
   "cheatsheet": {
-    "key_terms":    [{"term":"...","definition":"..."},{"term":"...","definition":"..."}],
-    "core_concepts":["concept 1","concept 2","concept 3","concept 4","concept 5"],
-    "quick_qa":     [{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}],
-    "formulas":     [{"label":"...","value":"..."}],
-    "memory_tips":  ["tip 1","tip 2","tip 3"]
+    "key_terms":    [{"term":"string","definition":"string"}],
+    "core_concepts":["string","string","string","string","string"],
+    "quick_qa":     [{"q":"string","a":"string"},{"q":"string","a":"string"},{"q":"string","a":"string"}],
+    "formulas":     [{"label":"string","value":"string"}],
+    "memory_tips":  ["string","string","string"]
   },
-  "visual_suggestions": [{"timestamp":"0:00","description":"...","type":"diagram|chart|illustration"}],
-  "audio_script": {"student":["line 1","line 2"],"professor":["line 1","line 2"]}
+  "visual_suggestions": [{"timestamp":"string","description":"string","type":"string"}],
+  "audio_script": {"student":["string"],"professor":["string"]}
 }
 
 Rules for ${mode.toUpperCase()} mode:
@@ -149,13 +146,38 @@ const callGemini = async (userPrompt, systemPrompt) => {
         body: JSON.stringify({
           system_instruction: { parts: [{ text: systemPrompt }] },
           contents: [{ parts: [{ text: userPrompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 5000 }
+          generationConfig: {
+            temperature:     0.7,
+            maxOutputTokens: 6000,
+            responseMimeType: "application/json",
+          }
         })
       });
       if (res.ok) {
         const data   = await res.json();
-        const result = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        if (result) { console.log(`[Gemini] ✅ chars=${result.length}`); return { ok:true, result }; }
+        let result   = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+        if (result) {
+          // Belt-and-suspenders cleanup even with responseMimeType
+          const firstBrace = result.indexOf("{");
+          const lastBrace  = result.lastIndexOf("}");
+          if (firstBrace !== -1 && lastBrace > firstBrace) {
+            result = result.slice(firstBrace, lastBrace + 1);
+          }
+          result = result.replace(/,\s*([}\]])/g, "$1");
+
+          // Validate it's parseable before returning
+          try {
+            JSON.parse(result);
+            console.log(`[Gemini] ✅ model=${model} chars=${result.length}`);
+            return { ok:true, result };
+          } catch(parseErr) {
+            console.error(`[Gemini] ❌ Invalid JSON from ${model}:`, result.slice(0,200));
+            // Don't return — fall through to retry/next model
+          }
+        }
+
+        console.warn(`[Gemini] ⚠️ Empty or invalid content from ${model}`);
       }
       const status  = res.status;
       const errBody = await res.json().catch(() => ({}));
