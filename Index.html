@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EduAI — Learn Smarter</title>
+  <meta name="description" content="Turn any PDF into a podcast dialogue, quiz, summary and audio — powered by Grok AI." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>" />
+</head>
+<body>
+
+  <!-- ═══════════════ NAVBAR ═══════════════ -->
+  <header class="navbar" id="navbar">
+    <div class="navbar__inner">
+      <button class="navbar__logo" id="btnLogo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">EduAI</span>
+      </button>
+      <nav class="navbar__nav">
+        <button class="nav-btn active" id="btnNavHome">Home</button>
+        <button class="nav-btn" id="btnNavLibrary" style="display:none">
+          Library <span class="nav-badge" id="navCount">0</span>
+        </button>
+      </nav>
+    </div>
+    <div class="navbar__progress" id="navProgress">
+      <div class="navbar__progress-fill" id="navProgressFill"></div>
+    </div>
+  </header>
+
+  <!-- ═══════════════ TOAST ═══════════════ -->
+  <div class="toast" id="toast" hidden>
+    <span id="toastText"></span>
+    <button class="toast__close" id="toastClose">✕</button>
+  </div>
+
+  <!-- ═══════════════ MAIN ═══════════════ -->
+  <main class="main">
+
+    <!-- ─── VIEW: HOME ─── -->
+    <section class="view" id="viewHome">
+      <div class="hero">
+        <div class="hero__pill">⚡ Grok · MongoDB · ElevenLabs · Antigravity</div>
+        <h1 class="hero__title">Turn Any PDF Into a<br/>Learning Experience</h1>
+        <p class="hero__sub">Paste text or upload a PDF. Get a podcast dialogue, quiz, visual map and spoken audio — instantly.</p>
+      </div>
+
+      <!-- Mode toggle -->
+      <div class="mode-toggle">
+        <button class="mode-btn active" id="modePaste" data-mode="paste">📝 Paste Text</button>
+        <button class="mode-btn" id="modeFile" data-mode="file">📄 Upload PDF</button>
+      </div>
+
+      <!-- Paste panel -->
+      <div class="upload-card" id="panelPaste">
+        <textarea id="inputText" class="upload-card__ta"
+          placeholder="Paste your academic content here… textbook chapters, lecture notes, research excerpts"
+          maxlength="8000"></textarea>
+        <div class="upload-card__footer">
+          <span class="char-count" id="charCount">0 / 8000</span>
+          <button class="btn-primary" id="btnGenerate" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Generate Lesson
+          </button>
+        </div>
+      </div>
+
+      <!-- File panel -->
+      <div class="upload-drop" id="panelFile" hidden>
+        <input type="file" id="fileInput" accept=".pdf,.txt" class="sr-only" />
+        <div class="upload-drop__zone" id="dropZone" tabindex="0" role="button">
+          <div class="upload-drop__icon">📄</div>
+          <p class="upload-drop__title">Drop your PDF here</p>
+          <p class="upload-drop__sub">or click to browse</p>
+        </div>
+      </div>
+
+      <p class="tip">💡 <strong>Tip:</strong> For best PDF results, paste the text directly.</p>
+
+      <!-- Recent lessons -->
+      <div id="recentSection" hidden>
+        <h2 class="section-heading">Recent Lessons</h2>
+        <div class="card-grid" id="recentGrid"></div>
+      </div>
+    </section>
+
+    <!-- ─── VIEW: LIBRARY ─── -->
+    <section class="view" id="viewLibrary" hidden>
+      <div class="lib-header">
+        <h1 class="lib-header__title">My Library</h1>
+        <p class="lib-header__sub" id="libSubtitle">0 lessons</p>
+      </div>
+      <div class="empty-state" id="libEmpty">
+        <div class="empty-state__icon">📚</div>
+        <p>No lessons yet.</p>
+        <button class="btn-primary" id="btnLibCreate">Create your first lesson</button>
+      </div>
+      <div class="card-grid" id="libraryGrid"></div>
+    </section>
+
+    <!-- ─── VIEW: LESSON ─── -->
+    <section class="view" id="viewLesson" hidden>
+      <div class="lesson-header">
+        <button class="back-btn" id="btnBack">← Back</button>
+        <div>
+          <h1 class="lesson-header__title" id="lessonTitle">Lesson</h1>
+          <p class="lesson-header__date" id="lessonDate"></p>
+        </div>
+      </div>
+
+      <!-- Audio player bar -->
+      <div class="audio-bar" id="audioBar" hidden>
+        <button class="audio-btn" id="audioPlay">▶</button>
+        <div class="audio-track">
+          <div class="audio-fill" id="audioFill"></div>
+        </div>
+        <span class="audio-label" id="audioLabel">Playing…</span>
+        <audio id="audioEl"></audio>
+      </div>
+
+      <!-- Tabs -->
+      <div class="tab-bar" role="tablist">
+        <button class="tab-pill active" data-tab="conversation" role="tab">💬 Dialogue</button>
+        <button class="tab-pill" data-tab="quiz"         role="tab">🧠 Quiz</button>
+        <button class="tab-pill" data-tab="summary"      role="tab">📋 Summary</button>
+        <button class="tab-pill" data-tab="visual"       role="tab">🗺️ Visual Map</button>
+      </div>
+
+      <!-- Tab panels rendered by app.js -->
+      <div id="tabPanel"></div>
+    </section>
+
+  </main>
+
+  <!-- ═══════════════ FOOTER ═══════════════ -->
+  <footer class="footer">
+    <div class="footer__inner">
+      <span>⚡ EduAI v2 — Grok · MongoDB · ElevenLabs · Antigravity</span>
+      <span id="footerStatus">●  Server offline</span>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="db.js"></script>
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+
+</body>
+</html>
