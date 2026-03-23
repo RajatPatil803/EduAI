@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>EduAI — Learn Smarter</title>
-  <meta name="description" content="Turn any PDF into a podcast dialogue, quiz, summary and audio — powered by Gemini AI." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
@@ -12,7 +11,7 @@
 </head>
 <body>
 
-  <!-- ═══════════════ NAVBAR ═══════════════ -->
+  <!-- NAVBAR -->
   <header class="navbar" id="navbar">
     <div class="navbar__inner">
       <button class="navbar__logo" id="btnLogo">
@@ -31,24 +30,23 @@
     </div>
   </header>
 
-  <!-- ═══════════════ TOAST ═══════════════ -->
-  <div class="toast" id="toast" hidden>
+  <!-- TOAST -->
+  <div class="toast" id="toast" hidden role="alert" aria-live="assertive">
     <span id="toastText"></span>
-    <button class="toast__close" id="toastClose">✕</button>
+    <button class="toast__close" id="toastClose" aria-label="Dismiss">✕</button>
   </div>
 
-  <!-- ═══════════════ MAIN ═══════════════ -->
   <main class="main">
 
-    <!-- ─── VIEW: HOME ─── -->
+    <!-- VIEW: HOME -->
     <section class="view" id="viewHome">
       <div class="hero">
         <div class="hero__pill">⚡ Gemini · MongoDB · ElevenLabs · Antigravity</div>
-        <h1 class="hero__title">Turn Any PDF Into a<br/>Learning Experience</h1>
-        <p class="hero__sub">Paste text or upload a PDF. Get a podcast dialogue, quiz, cheat sheet and spoken audio — instantly.</p>
+        <h1 class="hero__title">Turn Any File Into a<br/>Learning Experience</h1>
+        <p class="hero__sub">Upload PDF, Word, PPT, code files or paste text. Get a podcast dialogue, quiz, cheat sheet and spoken audio — instantly.</p>
       </div>
 
-      <!-- ── LEARNING MODE SELECTOR ── -->
+      <!-- Learning Mode -->
       <div class="mode-selector-wrap">
         <p class="mode-selector-label">🎓 Learning Mode</p>
         <div class="mode-selector" id="learningModeSelector">
@@ -73,13 +71,13 @@
       <!-- Input mode toggle -->
       <div class="mode-toggle">
         <button class="mode-btn active" id="modePaste" data-mode="paste">📝 Paste Text</button>
-        <button class="mode-btn" id="modeFile" data-mode="file">📄 Upload PDF</button>
+        <button class="mode-btn" id="modeFile"  data-mode="file">📎 Upload File</button>
       </div>
 
       <!-- Paste panel -->
       <div class="upload-card" id="panelPaste">
         <textarea id="inputText" class="upload-card__ta"
-          placeholder="Paste your academic content here… textbook chapters, lecture notes, research excerpts"
+          placeholder="Paste your content here… textbook chapters, lecture notes, code, research excerpts"
           maxlength="8000"></textarea>
         <div class="upload-card__footer">
           <span class="char-count" id="charCount">0 / 8000</span>
@@ -90,26 +88,42 @@
         </div>
       </div>
 
-      <!-- File panel -->
+      <!-- File upload panel -->
       <div class="upload-drop" id="panelFile" hidden>
-        <input type="file" id="fileInput" accept=".pdf,.txt" class="sr-only" />
-        <div class="upload-drop__zone" id="dropZone" tabindex="0" role="button">
-          <div class="upload-drop__icon">📄</div>
-          <p class="upload-drop__title">Drop your PDF here</p>
+        <input type="file" id="fileInput" class="sr-only"
+          accept=".pdf,.txt,.doc,.docx,.ppt,.pptx,.md,
+                  .c,.cpp,.h,.hpp,.java,.py,.js,.ts,.jsx,.tsx,
+                  .html,.htm,.css,.json,.xml,.csv,.cs,.go,
+                  .rb,.php,.swift,.kt,.rs,.sh,.yaml,.yml,.sql,
+                  .r,.scala,.pl,.lua,.dart,.vue,.svelte" />
+        <div class="upload-drop__zone" id="dropZone" tabindex="0" role="button" aria-label="Drop file here">
+          <div class="upload-drop__icon">📎</div>
+          <p class="upload-drop__title">Drop any file here</p>
           <p class="upload-drop__sub">or click to browse</p>
+          <div class="upload-drop__types">
+            <span class="file-type-pill">PDF</span>
+            <span class="file-type-pill">Word</span>
+            <span class="file-type-pill">PPT</span>
+            <span class="file-type-pill">Java</span>
+            <span class="file-type-pill">Python</span>
+            <span class="file-type-pill">C/C++</span>
+            <span class="file-type-pill">JS/TS</span>
+            <span class="file-type-pill">HTML/CSS</span>
+            <span class="file-type-pill">+ more</span>
+          </div>
         </div>
       </div>
 
-      <p class="tip">💡 <strong>Tip:</strong> For best PDF results, paste the text directly.</p>
+      <p class="tip">💡 <strong>Tip:</strong> For best results, paste text directly. PDF extraction works on text-based PDFs only.</p>
 
-      <!-- Recent lessons -->
+      <!-- Recent -->
       <div id="recentSection" hidden>
         <h2 class="section-heading">Recent Lessons</h2>
         <div class="card-grid" id="recentGrid"></div>
       </div>
     </section>
 
-    <!-- ─── VIEW: LIBRARY ─── -->
+    <!-- VIEW: LIBRARY -->
     <section class="view" id="viewLibrary" hidden>
       <div class="lib-header">
         <h1 class="lib-header__title">My Library</h1>
@@ -123,7 +137,7 @@
       <div class="card-grid" id="libraryGrid"></div>
     </section>
 
-    <!-- ─── VIEW: LESSON ─── -->
+    <!-- VIEW: LESSON -->
     <section class="view" id="viewLesson" hidden>
       <div class="lesson-header">
         <button class="back-btn" id="btnBack">← Back</button>
@@ -136,17 +150,16 @@
         </div>
       </div>
 
-      <!-- Audio player bar -->
+      <!-- Audio bar -->
       <div class="audio-bar" id="audioBar" hidden>
-        <button class="audio-btn" id="audioPlay">▶</button>
-        <div class="audio-track">
-          <div class="audio-fill" id="audioFill"></div>
-        </div>
-        <span class="audio-label" id="audioLabel">Playing…</span>
+        <button class="audio-btn" id="audioPlay" title="Play / Pause">▶</button>
+        <div class="audio-track"><div class="audio-fill" id="audioFill"></div></div>
+        <span class="audio-label" id="audioLabel">Ready</span>
+        <button class="audio-regen-btn" id="btnRegenAudio" title="Re-generate with ElevenLabs">🔄</button>
         <audio id="audioEl"></audio>
       </div>
 
-      <!-- Tabs — now includes Cheat Sheet -->
+      <!-- Tabs -->
       <div class="tab-bar" role="tablist">
         <button class="tab-pill active" data-tab="conversation" role="tab">💬 Dialogue</button>
         <button class="tab-pill" data-tab="quiz"         role="tab">🧠 Quiz</button>
@@ -160,11 +173,10 @@
 
   </main>
 
-  <!-- ═══════════════ FOOTER ═══════════════ -->
   <footer class="footer">
     <div class="footer__inner">
       <span>⚡ EduAI v2 — Gemini · MongoDB · ElevenLabs · Antigravity</span>
-      <span id="footerStatus">●  Server offline</span>
+      <span id="footerStatus">● Server offline</span>
     </div>
   </footer>
 
