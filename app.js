@@ -214,12 +214,10 @@
 
   /* ══ Utility: build full interleaved audio script ══════════ */
   const buildFullScript = (lesson) => {
-    // Use actual conversation for natural speaker order
     const conv = lesson?.conversation || [];
     if (conv.length > 0) {
       return conv.map(l => `${l.speaker}: ${l.text}`).join("  ");
     }
-    // Fallback: interleave audio_script arrays (student first)
     const profLines = lesson?.audio_script?.professor || [];
     const studLines = lesson?.audio_script?.student   || [];
     const maxLen    = Math.max(profLines.length, studLines.length);
@@ -236,18 +234,10 @@
     if (!text) return "";
     const codeKeywords = /\b(class|public|private|void|int|String|double|float|boolean|char|long|byte|short|static|new |return |import |package |System\.out|if\s*\(|for\s*\(|while\s*\(|extends|implements|interface|enum|try\s*\{|catch\s*\(|throws)\b/;
     const hasCode = codeKeywords.test(text);
-
-    if (!hasCode) {
-      return esc(text).replace(/\n/g, "<br>");
-    }
-
+    if (!hasCode) return esc(text).replace(/\n/g, "<br>");
     const lines     = text.split("\n");
     const firstCode = lines.findIndex(l => codeKeywords.test(l));
-
-    if (firstCode === -1) {
-      return esc(text).replace(/\n/g, "<br>");
-    }
-
+    if (firstCode === -1) return esc(text).replace(/\n/g, "<br>");
     const prosePart = lines.slice(0, firstCode).join("\n").trim();
     const codePart  = lines.slice(firstCode).join("\n").trim();
     const proseHTML = prosePart ? `<span>${esc(prosePart)}</span><br><br>` : "";
@@ -301,7 +291,6 @@
     EL.tabPanel.querySelectorAll(".bubble").forEach((b) => {
       b.addEventListener("click", () => b.classList.toggle("lit"));
     });
-
     const qaInput = $("qaInput");
     qaInput?.addEventListener("input", () => {
       qaInput.style.height = "auto";
@@ -311,7 +300,6 @@
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQA(); }
     });
     $("qaSend")?.addEventListener("click", sendQA);
-
     const hist = $("qaHistory");
     if (hist) hist.scrollTop = hist.scrollHeight;
   };
@@ -321,111 +309,316 @@
     const sendBtn = $("qaSend");
     const q = input?.value.trim();
     if (!q || !current) return;
-
     _qaHistory.push({ role: "user", text: q });
-    input.value        = "";
-    input.style.height = "auto";
+    input.value = ""; input.style.height = "auto";
     if (sendBtn) sendBtn.disabled = true;
-
     _qaHistory.push({ role: "prof", text: "Thinking…", loading: true });
     renderConversation(current);
-
     try {
       const ctx = [
-        current.sourceText
-          ? `Original content the student submitted:\n${current.sourceText.slice(0, 2000)}`
-          : "",
-        `Lesson conversation:\n${(current.conversation || [])
-          .map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 800)}`,
+        current.sourceText ? `Original content:\n${current.sourceText.slice(0, 2000)}` : "",
+        `Conversation:\n${(current.conversation || []).map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 800)}`,
       ].filter(Boolean).join("\n\n");
-
       const answer = await API.askQuestion(q, current.topic, ctx);
       _qaHistory[_qaHistory.length - 1] = { role: "prof", text: answer };
     } catch {
       _qaHistory[_qaHistory.length - 1] = { role: "prof", text: "Connection error. Please try again." };
     }
-
     renderConversation(current);
   };
 
-  /* ─ Quiz ─ */
+  /* ══════════════════════════════════════════════════════════
+     ─ Quiz — MCQ with navigation, scoring, explanations ─
+  ══════════════════════════════════════════════════════════ */
   const renderQuiz = (l) => {
+    // Flatten all questions from all levels into one array with level info
     const LEVELS = [
       { key: "basic",    label: "Basic",    emoji: "🌱", color: "var(--teal)"   },
       { key: "medium",   label: "Medium",   emoji: "🔥", color: "var(--gold)"   },
       { key: "advanced", label: "Advanced", emoji: "⚡", color: "var(--danger)" },
     ];
-    const totalQ = LEVELS.reduce((s, lv) => s + (l.questions[lv.key]?.length || 0), 0);
 
-    const levelsHTML = LEVELS.map(({ key, label, emoji, color }) => {
-      const qs = l.questions[key] || [];
-      const cards = qs.map((q, i) => `
-        <div class="q-card" data-qid="${key}-${i}">
-          <div class="q-card__body">
-            <div class="q-card__text">
-              <span class="q-card__num" style="color:${color}">Q${i+1}.</span>${esc(q.q)}
-            </div>
-            <button class="reveal-btn"
-              style="color:${color};border-color:${color};background:${color}22"
-              data-reveal="${key}-${i}">Reveal</button>
-          </div>
-          <div class="q-card__ans" data-ans="${key}-${i}"
-            style="border-color:${color}33;background:${color}0d" hidden>
-            <span class="ans-lbl" style="color:${color}">✓ Answer:</span>${esc(q.a)}
-          </div>
-        </div>`).join("");
-      return `
-        <div class="quiz-level">
-          <div class="quiz-level__hd">
-            <span>${emoji}</span>
-            <span class="quiz-level__name" style="color:${color}">${label}</span>
-            <span class="badge badge-teal">${qs.length} questions</span>
-          </div>
-          ${cards}
-        </div>`;
-    }).join("");
-
-    EL.tabPanel.innerHTML = `
-      <h2 class="tab-title">🧠 Quiz &amp; Practice</h2>
-      <div class="quiz-prog">
-        <div class="quiz-prog__track">
-          <div class="quiz-prog__fill" id="qBar" style="width:0%"></div>
-        </div>
-        <span class="quiz-prog__lbl" id="qLbl">0 / ${totalQ} revealed</span>
-      </div>
-      ${levelsHTML}`;
-
-    let revealed = 0;
-    EL.tabPanel.querySelectorAll(".reveal-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const ans = EL.tabPanel.querySelector(`[data-ans="${btn.dataset.reveal}"]`);
-        if (ans?.hidden) {
-          ans.hidden = false;
-          btn.remove();
-          revealed++;
-          const pct = Math.round((revealed / totalQ) * 100);
-          $("qBar").style.width = `${pct}%`;
-          $("qLbl").textContent = `${revealed} / ${totalQ} revealed`;
-        }
+    // Build flat question list
+    const allQuestions = [];
+    LEVELS.forEach(({ key, label, emoji, color }) => {
+      (l.questions[key] || []).forEach((q) => {
+        allQuestions.push({ ...q, level: label, emoji, color });
       });
     });
+
+    if (allQuestions.length === 0) {
+      EL.tabPanel.innerHTML = `<p style="color:var(--muted)">No questions available.</p>`;
+      return;
+    }
+
+    // State
+    let currentQ  = 0;
+    let answers   = new Array(allQuestions.length).fill(null); // selected option letter
+    let submitted = false;
+
+    const renderQuestion = () => {
+      const q       = allQuestions[currentQ];
+      const total   = allQuestions.length;
+      const pct     = Math.round(((currentQ) / total) * 100);
+      const ans     = answers[currentQ];
+      const isLast  = currentQ === total - 1;
+
+      // Check if old format (no options) — fallback to reveal style
+      const hasOptions = q.options && q.options.length === 4;
+
+      const optionsHTML = hasOptions
+        ? q.options.map((opt, i) => {
+            const letter = ["A","B","C","D"][i];
+            const sel    = ans === letter;
+            return `
+              <button class="quiz-opt ${sel ? "selected" : ""}"
+                data-letter="${letter}" ${submitted ? "disabled" : ""}>
+                <span class="quiz-opt__letter">${letter}</span>
+                <span class="quiz-opt__text">${esc(opt.replace(/^[A-D]\.\s*/,""))}</span>
+              </button>`;
+          }).join("")
+        : `<div class="quiz-opt-legacy">
+             <button class="reveal-btn" style="color:var(--accent);border-color:var(--accent);background:var(--accent)22"
+               id="legacyReveal">Show Answer</button>
+             <div id="legacyAns" hidden style="margin-top:12px;color:var(--text);font-size:14px">
+               <span style="color:var(--teal);font-weight:700">✓ Answer: </span>${esc(q.a || "")}
+             </div>
+           </div>`;
+
+      EL.tabPanel.innerHTML = `
+        <h2 class="tab-title">🧠 Quiz &amp; Practice</h2>
+
+        <!-- Progress -->
+        <div class="quiz-prog" style="margin-bottom:20px">
+          <div class="quiz-prog__track">
+            <div class="quiz-prog__fill" style="width:${pct}%"></div>
+          </div>
+          <span class="quiz-prog__lbl">Q${currentQ + 1} / ${total}</span>
+        </div>
+
+        <!-- Level badge -->
+        <div style="margin-bottom:14px">
+          <span class="badge badge-teal" style="color:${q.color};background:${q.color}22;border-color:${q.color}44">
+            ${q.emoji} ${q.level}
+          </span>
+        </div>
+
+        <!-- Question card -->
+        <div class="q-mcq-card">
+          <div class="q-mcq-num">Question ${currentQ + 1}</div>
+          <div class="q-mcq-text">${esc(q.q)}</div>
+
+          <!-- Options -->
+          <div class="q-mcq-options" id="quizOptions">
+            ${optionsHTML}
+          </div>
+        </div>
+
+        <!-- Navigation -->
+        <div class="quiz-nav">
+          <button class="quiz-nav-btn" id="btnPrev" ${currentQ === 0 ? "disabled" : ""}>
+            ← Previous
+          </button>
+          <div class="quiz-dots">
+            ${allQuestions.map((_, i) => `
+              <div class="quiz-dot ${i === currentQ ? "active" : ""} ${answers[i] !== null ? "answered" : ""}"></div>
+            `).join("")}
+          </div>
+          ${isLast
+            ? `<button class="quiz-nav-btn quiz-nav-btn--submit" id="btnSubmit"
+                 ${answers.some(a => a !== null) ? "" : "disabled"}>
+                 Submit Quiz ✓
+               </button>`
+            : `<button class="quiz-nav-btn quiz-nav-btn--next" id="btnNext">
+                 Next →
+               </button>`
+          }
+        </div>`;
+
+      // Option click
+      if (hasOptions && !submitted) {
+        document.querySelectorAll(".quiz-opt").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            answers[currentQ] = btn.dataset.letter;
+            renderQuestion();
+          });
+        });
+      }
+
+      // Legacy reveal
+      $("legacyReveal")?.addEventListener("click", () => {
+        $("legacyAns").hidden = false;
+        $("legacyReveal").style.display = "none";
+      });
+
+      // Prev / Next
+      $("btnPrev")?.addEventListener("click", () => { currentQ--; renderQuestion(); });
+      $("btnNext")?.addEventListener("click", () => { currentQ++; renderQuestion(); });
+
+      // Submit
+      $("btnSubmit")?.addEventListener("click", () => {
+        submitted = true;
+        renderResults();
+      });
+    };
+
+    const renderResults = () => {
+      const total   = allQuestions.length;
+      const correct = allQuestions.filter((q, i) => answers[i] === q.answer).length;
+      const pct     = Math.round((correct / total) * 100);
+
+      const scoreColor = pct >= 80 ? "var(--teal)"
+                       : pct >= 50 ? "var(--gold)"
+                       : "var(--danger)";
+
+      const scoreEmoji = pct >= 80 ? "🎉" : pct >= 50 ? "👍" : "📖";
+      const scoreMsg   = pct >= 80 ? "Excellent work!"
+                       : pct >= 50 ? "Good effort — review the missed ones!"
+                       : "Keep studying — you've got this!";
+
+      const reviewHTML = allQuestions.map((q, i) => {
+        const userAns    = answers[i];
+        const isCorrect  = userAns === q.answer;
+        const hasOptions = q.options && q.options.length === 4;
+
+        const optionsHTML = hasOptions
+          ? q.options.map((opt, oi) => {
+              const letter = ["A","B","C","D"][oi];
+              let cls = "quiz-opt quiz-opt--review";
+              if (letter === q.answer)            cls += " correct";
+              else if (letter === userAns && !isCorrect) cls += " wrong";
+              return `
+                <div class="${cls}">
+                  <span class="quiz-opt__letter">${letter}</span>
+                  <span class="quiz-opt__text">${esc(opt.replace(/^[A-D]\.\s*/,""))}</span>
+                  ${letter === q.answer     ? '<span class="quiz-opt__tag">✓ Correct</span>'  : ""}
+                  ${letter === userAns && !isCorrect ? '<span class="quiz-opt__tag wrong-tag">✗ Your answer</span>' : ""}
+                </div>`;
+            }).join("")
+          : `<div style="color:var(--teal);font-size:14px">Answer: ${esc(q.a || "")}</div>`;
+
+        return `
+          <div class="quiz-review-item ${isCorrect ? "review-correct" : "review-wrong"}">
+            <div class="quiz-review-header">
+              <span class="quiz-review-icon">${isCorrect ? "✅" : "❌"}</span>
+              <span class="quiz-review-q">Q${i + 1}: ${esc(q.q)}</span>
+            </div>
+            <div class="quiz-review-opts">${optionsHTML}</div>
+            ${q.explanation ? `
+              <div class="quiz-review-explanation">
+                <span class="quiz-review-explanation__label">💡 Explanation:</span>
+                ${esc(q.explanation)}
+              </div>` : ""}
+          </div>`;
+      }).join("");
+
+      EL.tabPanel.innerHTML = `
+        <h2 class="tab-title">🧠 Quiz Results</h2>
+
+        <!-- Score card -->
+        <div class="quiz-score-card" style="border-color:${scoreColor}44">
+          <div class="quiz-score-emoji">${scoreEmoji}</div>
+          <div class="quiz-score-num" style="color:${scoreColor}">${correct} / ${total}</div>
+          <div class="quiz-score-pct" style="color:${scoreColor}">${pct}%</div>
+          <div class="quiz-score-msg">${scoreMsg}</div>
+          <div class="quiz-score-bar">
+            <div class="quiz-score-bar__fill" style="width:${pct}%;background:${scoreColor}"></div>
+          </div>
+        </div>
+
+        <!-- Retake button -->
+        <div style="text-align:center;margin:20px 0">
+          <button class="btn-primary" id="btnRetake">🔄 Retake Quiz</button>
+        </div>
+
+        <!-- Review all questions -->
+        <h3 class="quiz-review-title">📋 Question Review</h3>
+        <div class="quiz-review-list">${reviewHTML}</div>`;
+
+      $("btnRetake")?.addEventListener("click", () => {
+        answers   = new Array(allQuestions.length).fill(null);
+        submitted = false;
+        currentQ  = 0;
+        renderQuestion();
+      });
+    };
+
+    renderQuestion();
   };
 
-  /* ─ Summary ─ */
+  /* ══════════════════════════════════════════════════════════
+     ─ Summary — detailed with overview, notes, conclusion ─
+  ══════════════════════════════════════════════════════════ */
   const renderSummary = (l) => {
-    const pts = (l.summary || []).map((p, i) => `
+    const s = l.summary || {};
+
+    // Handle both old (array) and new (object) formats
+    if (Array.isArray(s)) {
+      const pts = s.map((p, i) => `
+        <div class="key-pt">
+          <div class="key-pt__num">${i + 1}</div>
+          <div class="key-pt__text">${esc(p)}</div>
+        </div>`).join("");
+      EL.tabPanel.innerHTML = `
+        <h2 class="tab-title">📋 Quick Summary</h2>
+        <div class="expl-box">
+          <div class="expl-box__lbl">💡 Simple Explanation</div>
+          <div class="expl-box__text">${esc(l.simple_explanation || "")}</div>
+        </div>
+        <h3 style="color:var(--text);font-size:15px;font-weight:700;margin-bottom:14px">🔑 Key Points</h3>
+        <div class="key-pts">${pts}</div>`;
+      return;
+    }
+
+    // New detailed format
+    const overviewHTML = s.overview
+      ? `<div class="summary-overview">
+           <div class="summary-section-label">📖 Overview</div>
+           <p class="summary-overview-text">${esc(s.overview)}</p>
+         </div>` : "";
+
+    const keyPtsHTML = (s.key_points || []).map((p, i) => `
       <div class="key-pt">
         <div class="key-pt__num">${i + 1}</div>
         <div class="key-pt__text">${esc(p)}</div>
       </div>`).join("");
+
+    const detailedHTML = (s.detailed_notes || []).map((note) => `
+      <div class="summary-note-card">
+        <div class="summary-note-heading">${esc(note.heading)}</div>
+        <div class="summary-note-content">${esc(note.content)}</div>
+      </div>`).join("");
+
+    const conclusionHTML = s.conclusion
+      ? `<div class="summary-conclusion">
+           <div class="summary-section-label">🎯 Conclusion</div>
+           <p class="summary-conclusion-text">${esc(s.conclusion)}</p>
+         </div>` : "";
+
     EL.tabPanel.innerHTML = `
-      <h2 class="tab-title">📋 Quick Summary</h2>
-      <div class="expl-box">
+      <h2 class="tab-title">📋 Detailed Summary</h2>
+
+      <!-- Simple explanation -->
+      <div class="expl-box" style="margin-bottom:24px">
         <div class="expl-box__lbl">💡 Simple Explanation</div>
         <div class="expl-box__text">${esc(l.simple_explanation || "")}</div>
       </div>
-      <h3 style="color:var(--text);font-size:15px;font-weight:700;margin-bottom:14px">🔑 Key Points</h3>
-      <div class="key-pts">${pts}</div>`;
+
+      <!-- Overview -->
+      ${overviewHTML}
+
+      <!-- Key points -->
+      <div class="summary-section-label" style="margin-top:24px">🔑 Key Points</div>
+      <div class="key-pts" style="margin-top:12px">${keyPtsHTML}</div>
+
+      <!-- Detailed notes -->
+      ${detailedHTML ? `
+        <div class="summary-section-label" style="margin-top:28px">📝 Detailed Notes</div>
+        <div class="summary-notes-grid" style="margin-top:12px">${detailedHTML}</div>
+      ` : ""}
+
+      <!-- Conclusion -->
+      ${conclusionHTML}`;
   };
 
   /* ─ Cheat Sheet ─ */
@@ -569,69 +762,41 @@
     }
   };
 
-  /* ══ 11. TTS — Browser speech with dual voices ═════════════ */
+  /* ══ 11. TTS ═══════════════════════════════════════════════ */
   const speakWithBrowser = (text) => {
-    if (!window.speechSynthesis) {
-      toastError("⚠️ Your browser does not support speech synthesis.");
-      return;
-    }
+    if (!window.speechSynthesis) { toastError("⚠️ Your browser does not support speech synthesis."); return; }
     window.speechSynthesis.cancel();
-
-    // Split into individual speaker lines if formatted as "Speaker: text"
-    // Otherwise chunk normally
     const hasSpeakers = /^(Student|Professor):/m.test(text);
     let chunks = [];
-
     if (hasSpeakers) {
-      // Split by speaker turns
-      chunks = text.split(/(?=(?:Student|Professor):)/)
-        .map(s => s.trim()).filter(Boolean);
+      chunks = text.split(/(?=(?:Student|Professor):)/).map(s => s.trim()).filter(Boolean);
     } else {
       const CHUNK = 200;
-      for (let i = 0; i < text.length; i += CHUNK) {
-        chunks.push(text.slice(i, i + CHUNK));
-      }
+      for (let i = 0; i < text.length; i += CHUNK) chunks.push(text.slice(i, i + CHUNK));
     }
-
     let idx = 0;
     const speakNext = () => {
       if (idx >= chunks.length) {
-        EL.audioPlay.textContent  = "▶";
-        EL.audioLabel.textContent = "Playback complete";
-        audioPlaying = false;
-        return;
+        EL.audioPlay.textContent = "▶"; EL.audioLabel.textContent = "Playback complete"; audioPlaying = false; return;
       }
-
-      const chunk   = chunks[idx++];
-      const isStud  = chunk.startsWith("Student:");
-      const speakText = chunk.replace(/^(Student|Professor):\s*/,"").trim();
+      const chunk     = chunks[idx++];
+      const isStud    = chunk.startsWith("Student:");
+      const speakText = chunk.replace(/^(Student|Professor):\s*/, "").trim();
       if (!speakText) { speakNext(); return; }
-
-      const utt     = new SpeechSynthesisUtterance(speakText);
-      utt.rate      = 0.92;
-      utt.onend     = speakNext;
-      utt.onerror   = () => speakNext();
-
+      const utt      = new SpeechSynthesisUtterance(speakText);
+      utt.rate       = 0.92;
+      utt.onend      = speakNext;
+      utt.onerror    = () => speakNext();
       const voices   = window.speechSynthesis.getVoices();
       const enVoices = voices.filter(v => v.lang.startsWith("en"));
-
-      if (isStud) {
-        // Student: higher pitch, second available voice
-        utt.pitch = 1.25;
-        utt.voice = enVoices[1] || enVoices[0] || voices[0];
-      } else {
-        // Professor: normal pitch, first available voice
-        utt.pitch = 0.9;
-        utt.voice = enVoices[0] || voices[0];
-      }
-
+      if (isStud) { utt.pitch = 1.25; utt.voice = enVoices[1] || enVoices[0] || voices[0]; }
+      else        { utt.pitch = 0.9;  utt.voice = enVoices[0] || voices[0]; }
       window.speechSynthesis.speak(utt);
     };
-
-    EL.audioBar.hidden        = false;
+    EL.audioBar.hidden = false;
     EL.audioLabel.textContent = "Speaking (browser voice)…";
     EL.audioPlay.textContent  = "⏸";
-    audioPlaying              = true;
+    audioPlaying = true;
     speakNext();
   };
 
@@ -643,16 +808,15 @@
       const scriptText = buildFullScript(current);
       const url        = await API.generateAudio(current.localId, scriptText);
       DB.patch(current.localId, { audioUrl: url });
-      current.audioUrl          = url;
-      EL.audioBar.hidden        = false;
-      EL.audioEl.src            = url;
+      current.audioUrl = url;
+      EL.audioBar.hidden = false; EL.audioEl.src = url;
       EL.audioLabel.textContent = "ElevenLabs audio ready ✨";
       EL.audioEl.play()
         .then(() => { EL.audioPlay.textContent = "⏸"; audioPlaying = true; })
         .catch(() => { EL.audioLabel.textContent = "Click ▶ to play ElevenLabs audio"; });
       renderTab("visual");
     } catch (err) {
-      console.warn("ElevenLabs failed, using browser speech:", err.message);
+      console.warn("ElevenLabs failed:", err.message);
       const scriptText = buildFullScript(current);
       if (scriptText && window.speechSynthesis) {
         toastInfo("🔊 Using browser voice — ElevenLabs key needs updating");
@@ -667,29 +831,16 @@
 
   /* ══ 12. Audio player ══════════════════════════════════════ */
   EL.audioPlay.addEventListener("click", () => {
-    // ElevenLabs audio element
     if (current?.audioUrl && EL.audioEl.src) {
-      if (audioPlaying) {
-        EL.audioEl.pause();
-        EL.audioPlay.textContent = "▶";
-        audioPlaying = false;
-      } else {
-        EL.audioEl.play();
-        EL.audioPlay.textContent = "⏸";
-        audioPlaying = true;
-      }
+      if (audioPlaying) { EL.audioEl.pause(); EL.audioPlay.textContent = "▶"; audioPlaying = false; }
+      else              { EL.audioEl.play();  EL.audioPlay.textContent = "⏸"; audioPlaying = true;  }
       return;
     }
-    // Browser speech synthesis
     if (window.speechSynthesis) {
       if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-        window.speechSynthesis.pause();
-        EL.audioPlay.textContent = "▶";
-        audioPlaying = false;
+        window.speechSynthesis.pause();  EL.audioPlay.textContent = "▶"; audioPlaying = false;
       } else if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-        EL.audioPlay.textContent = "⏸";
-        audioPlaying = true;
+        window.speechSynthesis.resume(); EL.audioPlay.textContent = "⏸"; audioPlaying = true;
       }
     }
   });
@@ -698,9 +849,7 @@
     EL.audioFill.style.width = `${(EL.audioEl.currentTime / EL.audioEl.duration) * 100}%`;
   });
   EL.audioEl.addEventListener("ended", () => {
-    EL.audioPlay.textContent = "▶";
-    audioPlaying             = false;
-    EL.audioFill.style.width = "0%";
+    EL.audioPlay.textContent = "▶"; audioPlaying = false; EL.audioFill.style.width = "0%";
   });
 
   /* ══ 13. Event listeners ═══════════════════════════════════ */
@@ -711,20 +860,15 @@
       btn.classList.add("active");
     });
   });
-
   EL.btnLogo.addEventListener("click",       () => showView("home"));
   EL.btnNavHome.addEventListener("click",    () => showView("home"));
   EL.btnNavLibrary.addEventListener("click", () => showView("library"));
   EL.btnLibCreate.addEventListener("click",  () => showView("home"));
   EL.btnBack.addEventListener("click",       () => showView(DB.count() > 1 ? "library" : "home"));
-
   EL.toastClose.addEventListener("click", () => {
     clearTimeout(_toastTimer);
-    EL.toast.hidden = true;
-    EL.toast.className = "toast";
-    EL.toastText.textContent = "";
+    EL.toast.hidden = true; EL.toast.className = "toast"; EL.toastText.textContent = "";
   });
-
   [EL.modePaste, EL.modeFile].forEach((btn) => {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
@@ -734,21 +878,18 @@
       EL.panelFile.hidden  = mode !== "file";
     });
   });
-
   EL.inputText.addEventListener("input", () => {
     const n = EL.inputText.value.length;
     EL.charCount.textContent = `${n} / 8000`;
     EL.btnGenerate.disabled  = n === 0;
   });
   EL.btnGenerate.addEventListener("click", () => handleGenerate(EL.inputText.value));
-
   EL.dropZone.addEventListener("click",     () => EL.fileInput.click());
   EL.dropZone.addEventListener("keydown",   (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
   EL.dropZone.addEventListener("dragover",  (e) => { e.preventDefault(); EL.panelFile.classList.add("drag"); });
   EL.dropZone.addEventListener("dragleave", () => EL.panelFile.classList.remove("drag"));
   EL.dropZone.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    EL.panelFile.classList.remove("drag");
+    e.preventDefault(); EL.panelFile.classList.remove("drag");
     const file = e.dataTransfer.files?.[0];
     if (file) await handleFile(file);
   });
@@ -757,64 +898,41 @@
     if (file) await handleFile(file);
     EL.fileInput.value = "";
   });
-
   const handleFile = async (file) => {
     if (!file) return;
     const name = file.name;
     EL.btnGenerate.innerHTML = `<span class="spin"></span> Reading ${name}…`;
     let text = "";
-    try {
-      text = await API.readFile(file);
-    } catch (err) {
+    try { text = await API.readFile(file); }
+    catch (err) {
       toastError("⚠️ Could not read " + name + ": " + err.message);
       EL.btnGenerate.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Lesson`;
       return;
     }
-    if (!text.trim()) {
-      toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly.");
-      return;
-    }
+    if (!text.trim()) { toastError("⚠️ No readable text found in " + name + ". Try pasting directly."); return; }
     await handleGenerate(text);
   };
-
-  /* ── Audio regen button ── */
   const btnRegenAudio = $("btnRegenAudio");
   if (btnRegenAudio) {
     btnRegenAudio.addEventListener("click", async () => {
       if (!current) return;
-      btnRegenAudio.disabled    = true;
-      btnRegenAudio.textContent = "⏳";
-
+      btnRegenAudio.disabled = true; btnRegenAudio.textContent = "⏳";
       const scriptText = buildFullScript(current);
-
       try {
-        // Try ElevenLabs first
         const url = await API.generateAudio(current.localId, scriptText);
         DB.patch(current.localId, { audioUrl: url });
-        current.audioUrl          = url;
-        EL.audioEl.src            = url;
-        EL.audioEl.play();
-        EL.audioPlay.textContent  = "⏸";
-        EL.audioLabel.textContent = "ElevenLabs audio ✨";
-        audioPlaying              = true;
+        current.audioUrl = url; EL.audioEl.src = url; EL.audioEl.play();
+        EL.audioPlay.textContent = "⏸"; EL.audioLabel.textContent = "ElevenLabs audio ✨"; audioPlaying = true;
       } catch (err) {
-        // ElevenLabs failed — fall back to browser speech
-        console.warn("ElevenLabs regen failed, using browser speech:", err.message);
+        console.warn("ElevenLabs regen failed:", err.message);
         if (scriptText && window.speechSynthesis) {
           toastInfo("🔊 Using browser voice — ElevenLabs key needs updating");
           window.speechSynthesis.cancel();
           speakWithBrowser(scriptText);
-        } else {
-          toastError("🔊 Audio unavailable: " + err.message);
-        }
-      } finally {
-        btnRegenAudio.disabled    = false;
-        btnRegenAudio.textContent = "🔄";
-      }
+        } else { toastError("🔊 Audio unavailable: " + err.message); }
+      } finally { btnRegenAudio.disabled = false; btnRegenAudio.textContent = "🔄"; }
     });
   }
-
-  // Tabs
   document.querySelectorAll(".tab-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-pill").forEach((b) => b.classList.remove("active"));
