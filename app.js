@@ -32,6 +32,7 @@
   let activeTab    = "conversation";
   let learningMode = "student";
   let _qaHistory   = [];
+  let audioPlaying = false;
 
   /* ══ 3. Progress bar ═══════════════════════════════════════ */
   let _progTimer;
@@ -211,24 +212,37 @@
     renderers[tab]?.(current);
   };
 
+  /* ══ Utility: build full interleaved audio script ══════════ */
+  const buildFullScript = (lesson) => {
+    // Use actual conversation for natural speaker order
+    const conv = lesson?.conversation || [];
+    if (conv.length > 0) {
+      return conv.map(l => `${l.speaker}: ${l.text}`).join("  ");
+    }
+    // Fallback: interleave audio_script arrays (student first)
+    const profLines = lesson?.audio_script?.professor || [];
+    const studLines = lesson?.audio_script?.student   || [];
+    const maxLen    = Math.max(profLines.length, studLines.length);
+    const lines     = [];
+    for (let i = 0; i < maxLen; i++) {
+      if (studLines[i]) lines.push(`Student: ${studLines[i]}`);
+      if (profLines[i]) lines.push(`Professor: ${profLines[i]}`);
+    }
+    return lines.join("  ");
+  };
+
   /* ══ Utility: format answer text — renders code blocks ════ */
   const formatAnswer = (text) => {
     if (!text) return "";
-
-    // Keywords that indicate code is present
     const codeKeywords = /\b(class|public|private|void|int|String|double|float|boolean|char|long|byte|short|static|new |return |import |package |System\.out|if\s*\(|for\s*\(|while\s*\(|extends|implements|interface|enum|try\s*\{|catch\s*\(|throws)\b/;
-
     const hasCode = codeKeywords.test(text);
 
     if (!hasCode) {
-      // Plain text — just escape and add line breaks
       return esc(text).replace(/\n/g, "<br>");
     }
 
-    // Has code — split into prose intro and code body
-    // Find first line that looks like code
-    const lines      = text.split("\n");
-    const firstCode  = lines.findIndex(l => codeKeywords.test(l));
+    const lines     = text.split("\n");
+    const firstCode = lines.findIndex(l => codeKeywords.test(l));
 
     if (firstCode === -1) {
       return esc(text).replace(/\n/g, "<br>");
@@ -236,11 +250,7 @@
 
     const prosePart = lines.slice(0, firstCode).join("\n").trim();
     const codePart  = lines.slice(firstCode).join("\n").trim();
-
-    const proseHTML = prosePart
-      ? `<span>${esc(prosePart)}</span><br><br>`
-      : "";
-
+    const proseHTML = prosePart ? `<span>${esc(prosePart)}</span><br><br>` : "";
     return `${proseHTML}<code class="qa-code">${esc(codePart)}</code>`;
   };
 
@@ -300,7 +310,6 @@
     qaInput?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQA(); }
     });
-
     $("qaSend")?.addEventListener("click", sendQA);
 
     const hist = $("qaHistory");
@@ -560,27 +569,69 @@
     }
   };
 
-  /* ══ 11. TTS ═══════════════════════════════════════════════ */
+  /* ══ 11. TTS — Browser speech with dual voices ═════════════ */
   const speakWithBrowser = (text) => {
-    if (!window.speechSynthesis) { toastError("⚠️ Your browser does not support speech synthesis."); return; }
+    if (!window.speechSynthesis) {
+      toastError("⚠️ Your browser does not support speech synthesis.");
+      return;
+    }
     window.speechSynthesis.cancel();
-    const CHUNK  = 200;
-    const chunks = [];
-    for (let i = 0; i < text.length; i += CHUNK) chunks.push(text.slice(i, i + CHUNK));
+
+    // Split into individual speaker lines if formatted as "Speaker: text"
+    // Otherwise chunk normally
+    const hasSpeakers = /^(Student|Professor):/m.test(text);
+    let chunks = [];
+
+    if (hasSpeakers) {
+      // Split by speaker turns
+      chunks = text.split(/(?=(?:Student|Professor):)/)
+        .map(s => s.trim()).filter(Boolean);
+    } else {
+      const CHUNK = 200;
+      for (let i = 0; i < text.length; i += CHUNK) {
+        chunks.push(text.slice(i, i + CHUNK));
+      }
+    }
+
     let idx = 0;
     const speakNext = () => {
-      if (idx >= chunks.length) { EL.audioPlay.textContent = "▶"; EL.audioLabel.textContent = "Playback complete"; return; }
-      const utt    = new SpeechSynthesisUtterance(chunks[idx++]);
-      utt.rate     = 0.95; utt.pitch = 1.0; utt.onend = speakNext; utt.onerror = () => {};
-      const voices    = window.speechSynthesis.getVoices();
-      const preferred = voices.find(v => v.lang.startsWith("en") && v.name.includes("Google"))
-                     || voices.find(v => v.lang.startsWith("en")) || voices[0];
-      if (preferred) utt.voice = preferred;
+      if (idx >= chunks.length) {
+        EL.audioPlay.textContent  = "▶";
+        EL.audioLabel.textContent = "Playback complete";
+        audioPlaying = false;
+        return;
+      }
+
+      const chunk   = chunks[idx++];
+      const isStud  = chunk.startsWith("Student:");
+      const speakText = chunk.replace(/^(Student|Professor):\s*/,"").trim();
+      if (!speakText) { speakNext(); return; }
+
+      const utt     = new SpeechSynthesisUtterance(speakText);
+      utt.rate      = 0.92;
+      utt.onend     = speakNext;
+      utt.onerror   = () => speakNext();
+
+      const voices   = window.speechSynthesis.getVoices();
+      const enVoices = voices.filter(v => v.lang.startsWith("en"));
+
+      if (isStud) {
+        // Student: higher pitch, second available voice
+        utt.pitch = 1.25;
+        utt.voice = enVoices[1] || enVoices[0] || voices[0];
+      } else {
+        // Professor: normal pitch, first available voice
+        utt.pitch = 0.9;
+        utt.voice = enVoices[0] || voices[0];
+      }
+
       window.speechSynthesis.speak(utt);
     };
-    EL.audioBar.hidden = false;
+
+    EL.audioBar.hidden        = false;
     EL.audioLabel.textContent = "Speaking (browser voice)…";
     EL.audioPlay.textContent  = "⏸";
+    audioPlaying              = true;
     speakNext();
   };
 
@@ -589,7 +640,7 @@
     const btn = $("btnTTS");
     if (btn) { btn.disabled = true; btn.textContent = "Generating audio…"; }
     try {
-      const scriptText = (current.audio_script?.professor || []).join(" ");
+      const scriptText = buildFullScript(current);
       const url        = await API.generateAudio(current.localId, scriptText);
       DB.patch(current.localId, { audioUrl: url });
       current.audioUrl          = url;
@@ -602,7 +653,7 @@
       renderTab("visual");
     } catch (err) {
       console.warn("ElevenLabs failed, using browser speech:", err.message);
-      const scriptText = (current.audio_script?.professor || []).join(" ");
+      const scriptText = buildFullScript(current);
       if (scriptText && window.speechSynthesis) {
         toastInfo("🔊 Using browser voice — ElevenLabs key needs updating");
         speakWithBrowser(scriptText);
@@ -615,18 +666,30 @@
   };
 
   /* ══ 12. Audio player ══════════════════════════════════════ */
-  let audioPlaying = false;
   EL.audioPlay.addEventListener("click", () => {
+    // ElevenLabs audio element
     if (current?.audioUrl && EL.audioEl.src) {
-      if (audioPlaying) { EL.audioEl.pause(); EL.audioPlay.textContent = "▶"; audioPlaying = false; }
-      else              { EL.audioEl.play();  EL.audioPlay.textContent = "⏸"; audioPlaying = true;  }
+      if (audioPlaying) {
+        EL.audioEl.pause();
+        EL.audioPlay.textContent = "▶";
+        audioPlaying = false;
+      } else {
+        EL.audioEl.play();
+        EL.audioPlay.textContent = "⏸";
+        audioPlaying = true;
+      }
       return;
     }
+    // Browser speech synthesis
     if (window.speechSynthesis) {
       if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-        window.speechSynthesis.pause();  EL.audioPlay.textContent = "▶";
+        window.speechSynthesis.pause();
+        EL.audioPlay.textContent = "▶";
+        audioPlaying = false;
       } else if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume(); EL.audioPlay.textContent = "⏸";
+        window.speechSynthesis.resume();
+        EL.audioPlay.textContent = "⏸";
+        audioPlaying = true;
       }
     }
   });
@@ -635,7 +698,9 @@
     EL.audioFill.style.width = `${(EL.audioEl.currentTime / EL.audioEl.duration) * 100}%`;
   });
   EL.audioEl.addEventListener("ended", () => {
-    EL.audioPlay.textContent = "▶"; audioPlaying = false; EL.audioFill.style.width = "0%";
+    EL.audioPlay.textContent = "▶";
+    audioPlaying             = false;
+    EL.audioFill.style.width = "0%";
   });
 
   /* ══ 13. Event listeners ═══════════════════════════════════ */
@@ -646,15 +711,20 @@
       btn.classList.add("active");
     });
   });
+
   EL.btnLogo.addEventListener("click",       () => showView("home"));
   EL.btnNavHome.addEventListener("click",    () => showView("home"));
   EL.btnNavLibrary.addEventListener("click", () => showView("library"));
   EL.btnLibCreate.addEventListener("click",  () => showView("home"));
   EL.btnBack.addEventListener("click",       () => showView(DB.count() > 1 ? "library" : "home"));
+
   EL.toastClose.addEventListener("click", () => {
     clearTimeout(_toastTimer);
-    EL.toast.hidden = true; EL.toast.className = "toast"; EL.toastText.textContent = "";
+    EL.toast.hidden = true;
+    EL.toast.className = "toast";
+    EL.toastText.textContent = "";
   });
+
   [EL.modePaste, EL.modeFile].forEach((btn) => {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
@@ -664,18 +734,21 @@
       EL.panelFile.hidden  = mode !== "file";
     });
   });
+
   EL.inputText.addEventListener("input", () => {
     const n = EL.inputText.value.length;
     EL.charCount.textContent = `${n} / 8000`;
     EL.btnGenerate.disabled  = n === 0;
   });
   EL.btnGenerate.addEventListener("click", () => handleGenerate(EL.inputText.value));
+
   EL.dropZone.addEventListener("click",     () => EL.fileInput.click());
   EL.dropZone.addEventListener("keydown",   (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
   EL.dropZone.addEventListener("dragover",  (e) => { e.preventDefault(); EL.panelFile.classList.add("drag"); });
   EL.dropZone.addEventListener("dragleave", () => EL.panelFile.classList.remove("drag"));
   EL.dropZone.addEventListener("drop", async (e) => {
-    e.preventDefault(); EL.panelFile.classList.remove("drag");
+    e.preventDefault();
+    EL.panelFile.classList.remove("drag");
     const file = e.dataTransfer.files?.[0];
     if (file) await handleFile(file);
   });
@@ -684,6 +757,7 @@
     if (file) await handleFile(file);
     EL.fileInput.value = "";
   });
+
   const handleFile = async (file) => {
     if (!file) return;
     const name = file.name;
@@ -696,25 +770,51 @@
       EL.btnGenerate.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Lesson`;
       return;
     }
-    if (!text.trim()) { toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly."); return; }
+    if (!text.trim()) {
+      toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly.");
+      return;
+    }
     await handleGenerate(text);
   };
+
+  /* ── Audio regen button ── */
   const btnRegenAudio = $("btnRegenAudio");
   if (btnRegenAudio) {
     btnRegenAudio.addEventListener("click", async () => {
       if (!current) return;
-      btnRegenAudio.disabled = true; btnRegenAudio.textContent = "⏳";
+      btnRegenAudio.disabled    = true;
+      btnRegenAudio.textContent = "⏳";
+
+      const scriptText = buildFullScript(current);
+
       try {
-        const scriptText = (current.audio_script?.professor || []).join(" ");
-        if (!scriptText) throw new Error("No audio script available.");
+        // Try ElevenLabs first
         const url = await API.generateAudio(current.localId, scriptText);
         DB.patch(current.localId, { audioUrl: url });
-        current.audioUrl = url; EL.audioEl.src = url; EL.audioEl.play();
-        EL.audioPlay.textContent = "⏸"; EL.audioLabel.textContent = "ElevenLabs audio ✨"; audioPlaying = true;
-      } catch (err) { toastError("🔊 ElevenLabs error: " + err.message); }
-      finally { btnRegenAudio.disabled = false; btnRegenAudio.textContent = "🔄"; }
+        current.audioUrl          = url;
+        EL.audioEl.src            = url;
+        EL.audioEl.play();
+        EL.audioPlay.textContent  = "⏸";
+        EL.audioLabel.textContent = "ElevenLabs audio ✨";
+        audioPlaying              = true;
+      } catch (err) {
+        // ElevenLabs failed — fall back to browser speech
+        console.warn("ElevenLabs regen failed, using browser speech:", err.message);
+        if (scriptText && window.speechSynthesis) {
+          toastInfo("🔊 Using browser voice — ElevenLabs key needs updating");
+          window.speechSynthesis.cancel();
+          speakWithBrowser(scriptText);
+        } else {
+          toastError("🔊 Audio unavailable: " + err.message);
+        }
+      } finally {
+        btnRegenAudio.disabled    = false;
+        btnRegenAudio.textContent = "🔄";
+      }
     });
   }
+
+  // Tabs
   document.querySelectorAll(".tab-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-pill").forEach((b) => b.classList.remove("active"));
