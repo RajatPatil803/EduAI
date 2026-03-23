@@ -9,27 +9,20 @@
   const $ = (id) => document.getElementById(id);
 
   const EL = {
-    // views
     viewHome: $("viewHome"), viewLibrary: $("viewLibrary"), viewLesson: $("viewLesson"),
-    // navbar
     btnLogo: $("btnLogo"), btnNavHome: $("btnNavHome"), btnNavLibrary: $("btnNavLibrary"),
     navCount: $("navCount"), navProgress: $("navProgress"), navProgressFill: $("navProgressFill"),
-    // toast
     toast: $("toast"), toastText: $("toastText"), toastClose: $("toastClose"),
-    // home
     modePaste: $("modePaste"), modeFile: $("modeFile"),
     panelPaste: $("panelPaste"), panelFile: $("panelFile"),
     inputText: $("inputText"), charCount: $("charCount"),
     btnGenerate: $("btnGenerate"), dropZone: $("dropZone"), fileInput: $("fileInput"),
     recentSection: $("recentSection"), recentGrid: $("recentGrid"),
-    // library
     libSubtitle: $("libSubtitle"), libEmpty: $("libEmpty"),
     libraryGrid: $("libraryGrid"), btnLibCreate: $("btnLibCreate"),
-    // lesson
     btnBack: $("btnBack"), lessonTitle: $("lessonTitle"), lessonDate: $("lessonDate"),
     audioBar: $("audioBar"), audioPlay: $("audioPlay"), audioFill: $("audioFill"),
     audioLabel: $("audioLabel"), audioEl: $("audioEl"), tabPanel: $("tabPanel"),
-    // footer
     footerStatus: $("footerStatus"),
   };
 
@@ -218,6 +211,39 @@
     renderers[tab]?.(current);
   };
 
+  /* ══ Utility: format answer text — renders code blocks ════ */
+  const formatAnswer = (text) => {
+    if (!text) return "";
+
+    // Keywords that indicate code is present
+    const codeKeywords = /\b(class|public|private|void|int|String|double|float|boolean|char|long|byte|short|static|new |return |import |package |System\.out|if\s*\(|for\s*\(|while\s*\(|extends|implements|interface|enum|try\s*\{|catch\s*\(|throws)\b/;
+
+    const hasCode = codeKeywords.test(text);
+
+    if (!hasCode) {
+      // Plain text — just escape and add line breaks
+      return esc(text).replace(/\n/g, "<br>");
+    }
+
+    // Has code — split into prose intro and code body
+    // Find first line that looks like code
+    const lines      = text.split("\n");
+    const firstCode  = lines.findIndex(l => codeKeywords.test(l));
+
+    if (firstCode === -1) {
+      return esc(text).replace(/\n/g, "<br>");
+    }
+
+    const prosePart = lines.slice(0, firstCode).join("\n").trim();
+    const codePart  = lines.slice(firstCode).join("\n").trim();
+
+    const proseHTML = prosePart
+      ? `<span>${esc(prosePart)}</span><br><br>`
+      : "";
+
+    return `${proseHTML}<code class="qa-code">${esc(codePart)}</code>`;
+  };
+
   /* ─ Conversation + Q&A ─ */
   const renderConversation = (l) => {
     const rows = (l.conversation || []).map((line, i) => {
@@ -238,7 +264,7 @@
           ${msg.role === "user" ? "👤" : "👨‍🏫"}
         </div>
         <div class="qa-bubble ${msg.role === "user" ? "user" : "prof"} ${msg.loading ? "loading" : ""}">
-          ${esc(msg.text)}
+          ${msg.loading ? esc(msg.text) : formatAnswer(msg.text)}
         </div>
       </div>`).join("");
 
@@ -296,7 +322,6 @@
     renderConversation(current);
 
     try {
-      // Build rich context: original source text + conversation
       const ctx = [
         current.sourceText
           ? `Original content the student submitted:\n${current.sourceText.slice(0, 2000)}`
@@ -397,23 +422,18 @@
   /* ─ Cheat Sheet ─ */
   const renderCheatSheet = (l) => {
     const cs = l.cheatsheet || {};
-
     const keyTermsHTML = (cs.key_terms || []).map((t) => `
       <div class="cs-row">
         <div class="cs-row__q">${esc(t.term)}</div>
         <div class="cs-row__a">${esc(t.definition)}</div>
       </div>`).join("") || '<p style="color:var(--muted);font-size:13px">No key terms found.</p>';
-
     const conceptsHTML = (cs.core_concepts || []).map((c) =>
-      `<div class="cs-bullet">${esc(c)}</div>`
-    ).join("");
-
+      `<div class="cs-bullet">${esc(c)}</div>`).join("");
     const quickQAHTML = (cs.quick_qa || []).map((q) => `
       <div class="cs-row">
         <div class="cs-row__q">${esc(q.q)}</div>
         <div class="cs-row__a">${esc(q.a)}</div>
       </div>`).join("");
-
     const formulasHTML = (cs.formulas || []).length
       ? `<div class="cs-section">
            <div class="cs-section__title">⚗️ Formulas &amp; Rules</div>
@@ -425,19 +445,14 @@
                </div>`).join("")}
            </div>
          </div>` : "";
-
     const tipsHTML = (cs.memory_tips || []).map((t) =>
-      `<span class="cs-pill teal">${esc(t)}</span>`
-    ).join("");
-
+      `<span class="cs-pill teal">${esc(t)}</span>`).join("");
     const modeColors = { student: "var(--accent)", kids: "var(--teal)", exam: "var(--gold)" };
     const modeColor  = modeColors[l.learningMode || "student"];
     const modeLabel  = { student: "Student", kids: "Kids 🧸", exam: "Exam 📝" }[l.learningMode || "student"];
-
     EL.tabPanel.innerHTML = `
       <div class="cheatsheet">
-        <div class="cheatsheet__header"
-          style="background:color-mix(in srgb,${modeColor} 8%,var(--card))">
+        <div class="cheatsheet__header" style="background:color-mix(in srgb,${modeColor} 8%,var(--card))">
           <div class="cheatsheet__header-left">
             <span class="cheatsheet__icon">📄</span>
             <div>
@@ -487,23 +502,16 @@
           <div class="vis-item__desc">${esc(v.description)}</div>
         </div>
       </div>`).join("");
-
-    const script   = l.audio_script || {};
-    const colHTML  = (role, color) => `
+    const script  = l.audio_script || {};
+    const colHTML = (role, color) => `
       <div>
         <div class="audio-col__lbl" style="color:${color}">${role} lines</div>
         ${(script[role] || []).slice(0, 4).map((line) =>
           `<div class="audio-line">"${esc(line)}"</div>`).join("")}
       </div>`;
-
     const ttsBtn = l.audioUrl
-      ? `<p style="color:var(--teal);font-size:13px;margin-top:16px">
-           🔊 Audio already generated — use the player above.
-         </p>`
-      : `<button class="btn-primary" id="btnTTS" style="margin-top:16px">
-           🔊 Generate Spoken Audio (ElevenLabs)
-         </button>`;
-
+      ? `<p style="color:var(--teal);font-size:13px;margin-top:16px">🔊 Audio already generated — use the player above.</p>`
+      : `<button class="btn-primary" id="btnTTS" style="margin-top:16px">🔊 Generate Spoken Audio (ElevenLabs)</button>`;
     EL.tabPanel.innerHTML = `
       <h2 class="tab-title">🗺️ Visual Learning Map</h2>
       <p class="tab-sub">Suggested visuals &amp; TTS-ready audio script</p>
@@ -513,7 +521,6 @@
         ${colHTML("professor", "var(--accent)")}
         ${colHTML("student",   "var(--teal)")}
       </div>`;
-
     $("btnTTS")?.addEventListener("click", handleTTS);
   };
 
@@ -523,23 +530,19 @@
     startProgress();
     EL.btnGenerate.disabled  = true;
     EL.btnGenerate.innerHTML = `<span class="spin"></span> Processing…`;
-
     try {
       const modeLabel = { student: "🎒 Student", kids: "🧸 Kids", exam: "📝 Exam" };
       EL.btnGenerate.innerHTML = `<span class="spin"></span> ${modeLabel[learningMode] || ""} Mode…`;
-
       const lesson = await API.generateLesson(text, (pct) => {
         EL.navProgressFill.style.width = `${pct}%`;
         if (pct === 55) EL.btnGenerate.innerHTML = `<span class="spin"></span> AI thinking…`;
       }, learningMode);
-
       lesson.localId      = `lesson_${Date.now()}`;
       lesson.createdAt    = Date.now();
       lesson.audioUrl     = null;
       lesson.synced       = false;
       lesson.learningMode = learningMode;
-      lesson.sourceText   = text.trim().slice(0, 3000); // store original for Q&A context
-
+      lesson.sourceText   = text.trim().slice(0, 3000);
       await DB.save(lesson);
       refreshNav();
       openLesson(lesson);
@@ -559,34 +562,23 @@
 
   /* ══ 11. TTS ═══════════════════════════════════════════════ */
   const speakWithBrowser = (text) => {
-    if (!window.speechSynthesis) {
-      toastError("⚠️ Your browser does not support speech synthesis.");
-      return;
-    }
+    if (!window.speechSynthesis) { toastError("⚠️ Your browser does not support speech synthesis."); return; }
     window.speechSynthesis.cancel();
     const CHUNK  = 200;
     const chunks = [];
     for (let i = 0; i < text.length; i += CHUNK) chunks.push(text.slice(i, i + CHUNK));
     let idx = 0;
     const speakNext = () => {
-      if (idx >= chunks.length) {
-        EL.audioPlay.textContent  = "▶";
-        EL.audioLabel.textContent = "Playback complete";
-        return;
-      }
+      if (idx >= chunks.length) { EL.audioPlay.textContent = "▶"; EL.audioLabel.textContent = "Playback complete"; return; }
       const utt    = new SpeechSynthesisUtterance(chunks[idx++]);
-      utt.rate     = 0.95;
-      utt.pitch    = 1.0;
-      utt.onend    = speakNext;
-      utt.onerror  = () => {};
+      utt.rate     = 0.95; utt.pitch = 1.0; utt.onend = speakNext; utt.onerror = () => {};
       const voices    = window.speechSynthesis.getVoices();
       const preferred = voices.find(v => v.lang.startsWith("en") && v.name.includes("Google"))
-                     || voices.find(v => v.lang.startsWith("en"))
-                     || voices[0];
+                     || voices.find(v => v.lang.startsWith("en")) || voices[0];
       if (preferred) utt.voice = preferred;
       window.speechSynthesis.speak(utt);
     };
-    EL.audioBar.hidden        = false;
+    EL.audioBar.hidden = false;
     EL.audioLabel.textContent = "Speaking (browser voice)…";
     EL.audioPlay.textContent  = "⏸";
     speakNext();
@@ -643,14 +635,10 @@
     EL.audioFill.style.width = `${(EL.audioEl.currentTime / EL.audioEl.duration) * 100}%`;
   });
   EL.audioEl.addEventListener("ended", () => {
-    EL.audioPlay.textContent = "▶";
-    audioPlaying             = false;
-    EL.audioFill.style.width = "0%";
+    EL.audioPlay.textContent = "▶"; audioPlaying = false; EL.audioFill.style.width = "0%";
   });
 
   /* ══ 13. Event listeners ═══════════════════════════════════ */
-
-  // Learning mode selector
   document.querySelectorAll(".lmode-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       learningMode = btn.dataset.mode;
@@ -658,23 +646,15 @@
       btn.classList.add("active");
     });
   });
-
-  // Navbar
   EL.btnLogo.addEventListener("click",       () => showView("home"));
   EL.btnNavHome.addEventListener("click",    () => showView("home"));
   EL.btnNavLibrary.addEventListener("click", () => showView("library"));
   EL.btnLibCreate.addEventListener("click",  () => showView("home"));
   EL.btnBack.addEventListener("click",       () => showView(DB.count() > 1 ? "library" : "home"));
-
-  // Toast close
   EL.toastClose.addEventListener("click", () => {
     clearTimeout(_toastTimer);
-    EL.toast.hidden          = true;
-    EL.toast.className       = "toast";
-    EL.toastText.textContent = "";
+    EL.toast.hidden = true; EL.toast.className = "toast"; EL.toastText.textContent = "";
   });
-
-  // Mode toggle (Paste / File)
   [EL.modePaste, EL.modeFile].forEach((btn) => {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
@@ -684,23 +664,18 @@
       EL.panelFile.hidden  = mode !== "file";
     });
   });
-
-  // Textarea
   EL.inputText.addEventListener("input", () => {
     const n = EL.inputText.value.length;
     EL.charCount.textContent = `${n} / 8000`;
     EL.btnGenerate.disabled  = n === 0;
   });
   EL.btnGenerate.addEventListener("click", () => handleGenerate(EL.inputText.value));
-
-  // Drop zone
   EL.dropZone.addEventListener("click",     () => EL.fileInput.click());
   EL.dropZone.addEventListener("keydown",   (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
   EL.dropZone.addEventListener("dragover",  (e) => { e.preventDefault(); EL.panelFile.classList.add("drag"); });
   EL.dropZone.addEventListener("dragleave", () => EL.panelFile.classList.remove("drag"));
   EL.dropZone.addEventListener("drop", async (e) => {
-    e.preventDefault();
-    EL.panelFile.classList.remove("drag");
+    e.preventDefault(); EL.panelFile.classList.remove("drag");
     const file = e.dataTransfer.files?.[0];
     if (file) await handleFile(file);
   });
@@ -709,7 +684,6 @@
     if (file) await handleFile(file);
     EL.fileInput.value = "";
   });
-
   const handleFile = async (file) => {
     if (!file) return;
     const name = file.name;
@@ -722,41 +696,25 @@
       EL.btnGenerate.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Lesson`;
       return;
     }
-    if (!text.trim()) {
-      toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly.");
-      return;
-    }
+    if (!text.trim()) { toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly."); return; }
     await handleGenerate(text);
   };
-
-  // Audio regen
   const btnRegenAudio = $("btnRegenAudio");
   if (btnRegenAudio) {
     btnRegenAudio.addEventListener("click", async () => {
       if (!current) return;
-      btnRegenAudio.disabled    = true;
-      btnRegenAudio.textContent = "⏳";
+      btnRegenAudio.disabled = true; btnRegenAudio.textContent = "⏳";
       try {
         const scriptText = (current.audio_script?.professor || []).join(" ");
         if (!scriptText) throw new Error("No audio script available.");
         const url = await API.generateAudio(current.localId, scriptText);
         DB.patch(current.localId, { audioUrl: url });
-        current.audioUrl          = url;
-        EL.audioEl.src            = url;
-        EL.audioEl.play();
-        EL.audioPlay.textContent  = "⏸";
-        EL.audioLabel.textContent = "ElevenLabs audio ✨";
-        audioPlaying              = true;
-      } catch (err) {
-        toastError("🔊 ElevenLabs error: " + err.message);
-      } finally {
-        btnRegenAudio.disabled    = false;
-        btnRegenAudio.textContent = "🔄";
-      }
+        current.audioUrl = url; EL.audioEl.src = url; EL.audioEl.play();
+        EL.audioPlay.textContent = "⏸"; EL.audioLabel.textContent = "ElevenLabs audio ✨"; audioPlaying = true;
+      } catch (err) { toastError("🔊 ElevenLabs error: " + err.message); }
+      finally { btnRegenAudio.disabled = false; btnRegenAudio.textContent = "🔄"; }
     });
   }
-
-  // Tabs
   document.querySelectorAll(".tab-pill").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".tab-pill").forEach((b) => b.classList.remove("active"));
