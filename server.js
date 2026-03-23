@@ -1,17 +1,5 @@
 /**
  * server.js — EduAI v2
- * ─────────────────────────────────────────────────────────────────
- * STRATEGY: Zero rate limits using:
- *   1. KEY POOL     — rotate across multiple free Gemini API keys
- *   2. SMART CACHE  — identical content never hits API twice
- *   3. FASTEST MODEL — gemini-2.0-flash-lite (fastest free Gemini)
- *   4. SINGLE MODEL  — no fallback switching, pure Gemini only
- *
- * HOW TO ADD MORE KEYS (get more from aistudio.google.com):
- *   .env:  GEMINI_API_KEY_1=AIza...
- *          GEMINI_API_KEY_2=AIza...
- *          GEMINI_API_KEY_3=AIza...  (add as many as you want)
- * ─────────────────────────────────────────────────────────────────
  */
 
 require("dotenv").config();
@@ -24,17 +12,13 @@ const { ElevenLabsClient } = require("elevenlabs");
 
 /* ══════════════════════════════════════════════════════════════
    1. GEMINI KEY POOL
-   Reads GEMINI_API_KEY_1, _2, _3 ... from .env
-   Falls back to GEMINI_API_KEY if no numbered keys found
 ══════════════════════════════════════════════════════════════ */
 const buildKeyPool = () => {
   const keys = [];
-  // Collect all GEMINI_API_KEY_N keys
   for (let i = 1; i <= 20; i++) {
     const k = process.env[`GEMINI_API_KEY_${i}`];
     if (k?.startsWith("AIza")) keys.push({ key: k, id: i, callsThisMin: 0, resetAt: 0 });
   }
-  // Fallback to single GEMINI_API_KEY
   if (keys.length === 0) {
     const k = process.env.GEMINI_API_KEY;
     if (k?.startsWith("AIza")) keys.push({ key: k, id: 0, callsThisMin: 0, resetAt: 0 });
@@ -48,54 +32,40 @@ const buildKeyPool = () => {
   return keys;
 };
 
-const KEY_POOL    = buildKeyPool();
-const RPM_LIMIT   = 8;    // gemini-2.5-flash free: 10 RPM — use 8 to be safe
-const MODEL       = "gemini-2.5-flash";  // Current stable model — free tier: 10 RPM, 250 RPD
+const KEY_POOL  = buildKeyPool();
+const RPM_LIMIT = 8;
+const MODEL     = "gemini-2.5-flash";
 
-// IMPORTANT: Keys from the SAME Google account/project share quota.
-// For true isolation, each GEMINI_API_KEY_N must come from a DIFFERENT
-// Google account (different Gmail) AND be created in a NEW project in AI Studio.
-// Keys from the same account = same quota = no benefit from rotation.
-
-let _poolIndex = 0; // Round-robin pointer
+let _poolIndex = 0;
 
 /* ══════════════════════════════════════════════════════════════
    2. KEY ROTATION LOGIC
-   Each key gets its own 60-second window counter.
-   When a key is exhausted, the next key takes over.
-   If ALL keys exhausted → wait for the fastest reset.
 ══════════════════════════════════════════════════════════════ */
 const getNextKey = () => {
   const now = Date.now();
-
-  // Reset counters for keys whose window has expired
   KEY_POOL.forEach(k => {
     if (now >= k.resetAt) { k.callsThisMin = 0; k.resetAt = now + 60_000; }
   });
-
-  // Find an available key (round-robin for load spreading)
   for (let i = 0; i < KEY_POOL.length; i++) {
     const idx = (_poolIndex + i) % KEY_POOL.length;
     const k   = KEY_POOL[idx];
     if (k.callsThisMin < RPM_LIMIT) {
-      _poolIndex = (idx + 1) % KEY_POOL.length; // advance pointer
+      _poolIndex = (idx + 1) % KEY_POOL.length;
       k.callsThisMin++;
       console.log(`[Pool] Using key #${k.id} (${k.callsThisMin}/${RPM_LIMIT} calls this min)`);
       return { key: k.key, available: true, waitMs: 0 };
     }
   }
-
-  // All keys exhausted — find the soonest reset
   const soonestReset = Math.min(...KEY_POOL.map(k => k.resetAt));
-  const waitMs       = Math.max(0, soonestReset - now) + 500; // +500ms buffer
-  console.log(`[Pool] All keys at limit. Next slot in ${(waitMs/1000).toFixed(1)}s`);
+  const waitMs       = Math.max(0, soonestReset - now) + 500;
+  console.log(`[Pool] All keys at limit. Next slot in ${(waitMs / 1000).toFixed(1)}s`);
   return { key: null, available: false, waitMs };
 };
 
 const markKeyRateLimited = (keyValue, retryAfterSec = 60) => {
   const k = KEY_POOL.find(k => k.key === keyValue);
   if (k) {
-    k.callsThisMin = RPM_LIMIT; // Mark as fully used
+    k.callsThisMin = RPM_LIMIT;
     k.resetAt      = Date.now() + retryAfterSec * 1000;
     console.log(`[Pool] Key #${k.id} rate limited — reset in ${retryAfterSec}s`);
   }
@@ -103,9 +73,6 @@ const markKeyRateLimited = (keyValue, retryAfterSec = 60) => {
 
 /* ══════════════════════════════════════════════════════════════
    3. RESPONSE CACHE
-   Hash the (text + mode) → store result in memory.
-   Identical content returns instantly without any API call.
-   Cache holds last 200 results, auto-evicts oldest entries.
 ══════════════════════════════════════════════════════════════ */
 const CACHE     = new Map();
 const CACHE_MAX = 200;
@@ -121,10 +88,7 @@ const cacheGet = (key) => {
 };
 
 const cacheSet = (key, result) => {
-  if (CACHE.size >= CACHE_MAX) {
-    // Evict oldest entry
-    CACHE.delete(CACHE.keys().next().value);
-  }
+  if (CACHE.size >= CACHE_MAX) CACHE.delete(CACHE.keys().next().value);
   CACHE.set(key, { result, ts: Date.now() });
 };
 
@@ -154,13 +118,13 @@ const lessonSchema = new mongoose.Schema({
     medium:   [{ q: String, a: String }],
     advanced: [{ q: String, a: String }],
   },
-  summary:   [String],
+  summary: [String],
   cheatsheet: {
-    key_terms:    [{ term: String, definition: String }],
-    core_concepts:[String],
-    quick_qa:     [{ q: String, a: String }],
-    formulas:     [{ label: String, value: String }],
-    memory_tips:  [String],
+    key_terms:     [{ term: String, definition: String }],
+    core_concepts: [String],
+    quick_qa:      [{ q: String, a: String }],
+    formulas:      [{ label: String, value: String }],
+    memory_tips:   [String],
   },
   visual_suggestions: [{ timestamp: String, description: String, type: String }],
   audio_script:       { student: [String], professor: [String] },
@@ -222,24 +186,25 @@ ${MODE_RULES[mode]}
 General: summary = exactly 5 strings, cheatsheet.formulas = [] if no formulas apply.`;
 
 /* ══════════════════════════════════════════════════════════════
-   7. GEMINI CALL (single model, key pool rotation)
+   7. GEMINI CALL
+   options.allowPlainText = true  → skip JSON validation (for Q&A)
+   options.allowPlainText = false → validate JSON (for lesson gen)
 ══════════════════════════════════════════════════════════════ */
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 const geminiUrl = (key) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`;
 
-const callGemini = async (userPrompt, systemPrompt) => {
-  // Try up to (keys × 2) times total
+const callGemini = async (userPrompt, systemPrompt, options = {}) => {
+  const { allowPlainText = false } = options;
   const maxAttempts = KEY_POOL.length * 2;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const { key, available, waitMs } = getNextKey();
 
     if (!available) {
-      console.log(`[Gemini] All keys busy — waiting ${(waitMs/1000).toFixed(1)}s`);
+      console.log(`[Gemini] All keys busy — waiting ${(waitMs / 1000).toFixed(1)}s`);
       await sleep(waitMs);
-      // After waiting, try again from top of loop
       const slot = getNextKey();
       if (!slot.available) continue;
     }
@@ -259,51 +224,61 @@ const callGemini = async (userPrompt, systemPrompt) => {
           generationConfig: {
             temperature:     0.7,
             maxOutputTokens: 6000,
-          }
-        })
+          },
+        }),
       });
 
-      // ── Success ──────────────────────────────────────────
+      /* ── Success ── */
       if (res.ok) {
         const data = await res.json();
         let raw    = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
         if (!raw) { console.warn("[Gemini] Empty response"); continue; }
 
-        // Strip markdown fences Gemini sometimes adds
+        // Strip markdown fences
         raw = raw.replace(/^```json\s*/im, "").replace(/^```\s*/im, "").replace(/```\s*$/im, "").trim();
 
-        // Extract just the JSON object (handles any preamble text)
+        // If plain text is allowed (Q&A routes) — return immediately
+        if (allowPlainText) {
+          // Still try to extract JSON object if present, otherwise return raw text
+          const fb = raw.indexOf("{");
+          const lb = raw.lastIndexOf("}");
+          if (fb !== -1 && lb > fb) {
+            const candidate = raw.slice(fb, lb + 1).replace(/,\s*([}\]])/g, "$1");
+            try { JSON.parse(candidate); raw = candidate; } catch { /* keep raw text */ }
+          }
+          console.log(`[Gemini] ✅ Success (text) — ${raw.length} chars`);
+          return { ok: true, result: raw };
+        }
+
+        // JSON-only path (lesson generation)
         const fb = raw.indexOf("{");
         const lb = raw.lastIndexOf("}");
         if (fb !== -1 && lb > fb) raw = raw.slice(fb, lb + 1);
-
-        // Fix trailing commas — common Gemini bug
         raw = raw.replace(/,\s*([}\]])/g, "$1");
 
         try {
-          JSON.parse(raw); // Validate it is real JSON
-          console.log(`[Gemini] ✅ Success — ${raw.length} chars`);
+          JSON.parse(raw);
+          console.log(`[Gemini] ✅ Success (JSON) — ${raw.length} chars`);
           return { ok: true, result: raw };
         } catch {
           console.error("[Gemini] ❌ Invalid JSON:", raw.slice(0, 150));
-          continue; // retry with next key
+          continue;
         }
       }
 
-      // ── Rate limit ────────────────────────────────────────
+      /* ── Rate limit ── */
       if (res.status === 429) {
-        const errBody     = await res.json().catch(() => ({}));
-        const retryAfter  = parseInt(
+        const errBody    = await res.json().catch(() => ({}));
+        const retryAfter = parseInt(
           errBody?.error?.details
             ?.find(d => d["@type"]?.includes("RetryInfo"))
-            ?.retryDelay?.replace("s","") || "60"
+            ?.retryDelay?.replace("s", "") || "60"
         );
         markKeyRateLimited(useKey, retryAfter);
-        continue; // Immediately try next key
+        continue;
       }
 
-      // ── Auth error — fail fast ─────────────────────────
+      /* ── Auth error ── */
       if (res.status === 401 || res.status === 403) {
         return { ok: false, status: 401, error: "Invalid Gemini API key. Check your .env file." };
       }
@@ -339,21 +314,17 @@ app.post("/api/generate", async (req, res) => {
   const truncated = text.trim().slice(0, 8000);
   console.log(`\n[/generate] mode=${mode} chars=${truncated.length}`);
 
-  // ── Check cache first ──────────────────────────────────
   const ck     = cacheKey(truncated, mode);
   const cached = cacheGet(ck);
   if (cached) return res.json({ result: cached, mode, fromCache: true });
 
-  // ── Call Gemini ────────────────────────────────────────
   const sysPrompt  = buildPrompt(mode);
   const userPrompt = `Convert this academic content into a ${mode} learning experience:\n\n${truncated}`;
 
   const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt);
   if (!ok) return res.status(status || 500).json({ error });
 
-  // ── Cache result ───────────────────────────────────────
   cacheSet(ck, result);
-
   return res.json({ result, mode, fromCache: false });
 });
 
@@ -383,7 +354,6 @@ app.post("/api/tts", async (req, res) => {
 });
 
 /* ── POST /api/generate-qa ──────────────────────────────── */
-// Answers user questions in the context of the lesson
 app.post("/api/generate-qa", async (req, res) => {
   const { question, context } = req.body;
   if (!question?.trim()) return res.status(400).json({ error: "question is required." });
@@ -391,33 +361,24 @@ app.post("/api/generate-qa", async (req, res) => {
   const sysPrompt = `You are a helpful professor. The student has just studied a lesson and is asking a follow-up question.
 Answer clearly, concisely (2-4 sentences), and in a friendly teaching style.
 Use the lesson context provided to give a relevant, accurate answer.
-Never make up facts. If unsure, say so.`;
+Never make up facts. If unsure, say so.
+Return plain text only — no JSON, no markdown, no bullet points.`;
 
-  const userPrompt = `Lesson context:
-${context || ""}
+  const userPrompt = `Lesson context:\n${context || ""}\n\nStudent question: ${question}`;
 
-Student question: ${question}`;
-
-  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt);
+  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt, { allowPlainText: true });
   if (!ok) return res.status(status || 500).json({ error });
 
-  // Result may be JSON or plain text — handle both
   let answer = result;
   try {
     const parsed = JSON.parse(result);
     answer = parsed.answer || parsed.text || parsed.response || result;
-  } catch { /* plain text answer — use as-is */ }
+  } catch { /* plain text — use as-is */ }
 
-  return res.json({ answer: String(answer).trim() });
+  return res.json({ answer: String(answer).replace(/[*_`#]/g, "").trim() });
 });
 
-/* ── MongoDB CRUD ────────────────────────────────────────── */
-app.get("/api/lessons",        async (_,r) => { try { r.json(await Lesson.find().sort({createdAt:-1}).lean()); } catch(e){ r.status(500).json({error:e.message}); }});
-app.post("/api/lessons",       async (q,r) => { try { r.status(201).json(await Lesson.create(q.body)); } catch(e){ r.status(400).json({error:e.message}); }});
-app.put("/api/lessons/:id",    async (q,r) => { try { const l=await Lesson.findByIdAndUpdate(q.params.id,q.body,{new:true}); if(!l) return r.status(404).json({error:"Not found"}); r.json(l); } catch(e){ r.status(400).json({error:e.message}); }});
-app.delete("/api/lessons/:id", async (q,r) => { try { await Lesson.findByIdAndDelete(q.params.id); r.json({ok:true}); } catch(e){ r.status(400).json({error:e.message}); }});
-
-/* ── POST /api/qa — ask a question about a lesson ──────────── */
+/* ── POST /api/qa ───────────────────────────────────────── */
 app.post("/api/qa", async (req, res) => {
   const { question, topic, context } = req.body;
   if (!question?.trim()) return res.status(400).json({ error: "question is required." });
@@ -425,16 +386,13 @@ app.post("/api/qa", async (req, res) => {
   const sysPrompt = `You are a helpful professor answering a student's question about "${topic || "this topic"}".
 Give a clear, concise answer in 2-4 sentences. Be educational and encouraging.
 If the question is unrelated to the topic, gently redirect back to the lesson content.
-Never use markdown formatting — plain text only.`;
+Return plain text only — no JSON, no markdown formatting.`;
 
-  const userPrompt = `Context: ${(context || "").slice(0, 1000)}
+  const userPrompt = `Context: ${(context || "").slice(0, 1000)}\n\nStudent question: ${question.trim()}`;
 
-Student question: ${question.trim()}`;
-
-  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt);
+  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt, { allowPlainText: true });
   if (!ok) return res.status(status || 500).json({ error });
 
-  // Result may be JSON or plain text — extract text
   let answer = result;
   try {
     const parsed = JSON.parse(result);
@@ -444,8 +402,29 @@ Student question: ${question.trim()}`;
   return res.json({ answer: answer.replace(/[*_`#]/g, "").trim() });
 });
 
+/* ── MongoDB CRUD ────────────────────────────────────────── */
+app.get("/api/lessons", async (_, r) => {
+  try { r.json(await Lesson.find().sort({ createdAt: -1 }).lean()); }
+  catch (e) { r.status(500).json({ error: e.message }); }
+});
+app.post("/api/lessons", async (q, r) => {
+  try { r.status(201).json(await Lesson.create(q.body)); }
+  catch (e) { r.status(400).json({ error: e.message }); }
+});
+app.put("/api/lessons/:id", async (q, r) => {
+  try {
+    const l = await Lesson.findByIdAndUpdate(q.params.id, q.body, { new: true });
+    if (!l) return r.status(404).json({ error: "Not found" });
+    r.json(l);
+  } catch (e) { r.status(400).json({ error: e.message }); }
+});
+app.delete("/api/lessons/:id", async (q, r) => {
+  try { await Lesson.findByIdAndDelete(q.params.id); r.json({ ok: true }); }
+  catch (e) { r.status(400).json({ error: e.message }); }
+});
+
 /* ── Health ──────────────────────────────────────────────── */
-app.get("/api/health", (_,r) => r.json({
+app.get("/api/health", (_, r) => r.json({
   status:    "ok",
   model:     MODEL,
   keys:      KEY_POOL.length,
@@ -454,13 +433,16 @@ app.get("/api/health", (_,r) => r.json({
 }));
 
 /* ── Cache stats ─────────────────────────────────────────── */
-app.get("/api/cache", (_,r) => r.json({
+app.get("/api/cache", (_, r) => r.json({
   size:    CACHE.size,
   maxSize: CACHE_MAX,
-  keys:    [...CACHE.keys()].map(k => k.slice(0,8) + "..."),
+  keys:    [...CACHE.keys()].map(k => k.slice(0, 8) + "..."),
 }));
 
-app.get("*", (q,r) => { if(!q.path.startsWith("/api/")) r.sendFile(path.join(__dirname,"index.html")); });
+/* ── Catch-all → index.html ──────────────────────────────── */
+app.get("*", (q, r) => {
+  if (!q.path.startsWith("/api/")) r.sendFile(path.join(__dirname, "index.html"));
+});
 
 /* ── Start ───────────────────────────────────────────────── */
 app.listen(PORT, () => {
