@@ -1,12 +1,10 @@
 /**
  * api.js — EduAI v2  Frontend API Layer
- * Features: Universal file reader, TTS, lesson generation
  */
 
 const API = (() => {
   const BASE = "";
 
-  /* ── JSON parser ── */
   const _json = (raw) => {
     let clean = raw
       .replace(/^```json\s*/im, "").replace(/^```\s*/im, "").replace(/```\s*$/im, "").trim();
@@ -23,7 +21,6 @@ const API = (() => {
     if (!obj.cheatsheet) obj.cheatsheet = { key_terms:[], core_concepts:[], quick_qa:[], formulas:[], memory_tips:[] };
   };
 
-  /* ── Generate lesson ── */
   const generateLesson = async (text, onProgress, mode = "student") => {
     if (!text?.trim()) throw new Error("No text provided.");
     onProgress?.(10);
@@ -46,7 +43,6 @@ const API = (() => {
     return lesson;
   };
 
-  /* ── TTS ── */
   const generateAudio = async (lessonId, text) => {
     const res = await fetch(`${BASE}/api/tts`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -57,18 +53,21 @@ const API = (() => {
     return URL.createObjectURL(blob);
   };
 
-  /* ── Health ── */
   const health = async () => {
     try { const r = await fetch(`${BASE}/api/health`, { signal: AbortSignal.timeout(4000) }); return r.ok; }
     catch { return false; }
   };
 
-  /* ══════════════════════════════════════════════════
-     UNIVERSAL FILE READER
-     Supports: PDF, Word, PPT, all code/text files
-  ══════════════════════════════════════════════════ */
+  const askQuestion = async (question, topic, context) => {
+    const res = await fetch(`${BASE}/api/generate-qa`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, context: `Topic: ${topic}\n${context}` }),
+    });
+    if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e.error || `QA error ${res.status}`); }
+    const data = await res.json();
+    return data.answer || "Sorry, I couldn't answer that right now.";
+  };
 
-  /* Plain text / code */
   const _readAsText = (file) => new Promise((res, rej) => {
     const r = new FileReader();
     r.onload  = (e) => res(e.target.result || "");
@@ -76,7 +75,6 @@ const API = (() => {
     r.readAsText(file);
   });
 
-  /* PDF using pdf.js */
   const _readPDF = (file) => new Promise((resolve, reject) => {
     const tryExtract = () => {
       const lib = window["pdfjs-dist/build/pdf"];
@@ -104,7 +102,6 @@ const API = (() => {
     document.head.appendChild(s);
   });
 
-  /* DOCX — extract text from Word XML */
   const _readDOCX = (file) => new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = (e) => {
@@ -121,7 +118,6 @@ const API = (() => {
     r.readAsArrayBuffer(file);
   });
 
-  /* PPTX — extract text from PowerPoint XML slides */
   const _readPPTX = (file) => new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = (e) => {
@@ -138,7 +134,6 @@ const API = (() => {
     r.readAsArrayBuffer(file);
   });
 
-  /* Master dispatcher */
   const readFile = async (file) => {
     const ext = file.name.toLowerCase().split(".").pop();
     const CODE_EXTS = new Set([
@@ -151,11 +146,10 @@ const API = (() => {
     if (ext === "pdf")                   return _readPDF(file);
     if (ext === "docx" || ext === "doc") return _readDOCX(file);
     if (ext === "pptx" || ext === "ppt") return _readPPTX(file);
-    // Unknown — try as plain text
     return _readAsText(file);
   };
 
-  return { generateLesson, generateAudio, health, readFile };
+  return { generateLesson, generateAudio, health, askQuestion, readFile };
 })();
 
 window.API = API;
