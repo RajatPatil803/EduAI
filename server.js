@@ -382,11 +382,13 @@ app.post("/api/qa", async (req, res) => {
   const { question, topic, context } = req.body;
   if (!question?.trim()) return res.status(400).json({ error: "question is required." });
 
-  const sysPrompt = `You are a helpful professor answering a student's question about "${topic || "this topic"}".
-Give a clear, concise answer in 2-4 sentences. Be educational and encouraging.
-If the question is unrelated to the topic, gently redirect back to the lesson content.
-Return plain text only — no JSON, no markdown formatting.`;
-
+  const sysPrompt = `You are a helpful professor answering a student's follow-up question about a lesson.
+Rules:
+- If the student asks for code, a compressed version, an example, or anything technical — provide the actual code or technical content, not just a description.
+- If the student asks for an explanation — answer in 2-4 clear sentences.
+- Use the original content provided in the context to base your answer on.
+- Never make up facts. If unsure, say so.
+- Do not use JSON format. Plain text or code blocks only.`;
   const userPrompt = `Context: ${(context || "").slice(0, 1000)}\n\nStudent question: ${question.trim()}`;
 
   const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt, { allowPlainText: true });
