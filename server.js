@@ -237,9 +237,8 @@ const callGemini = async (userPrompt, systemPrompt, options = {}) => {
         // Strip markdown fences
         raw = raw.replace(/^```json\s*/im, "").replace(/^```\s*/im, "").replace(/```\s*$/im, "").trim();
 
-        // If plain text is allowed (Q&A routes) — return immediately
+        // Plain text allowed (Q&A routes) — return immediately
         if (allowPlainText) {
-          // Still try to extract JSON object if present, otherwise return raw text
           const fb = raw.indexOf("{");
           const lb = raw.lastIndexOf("}");
           if (fb !== -1 && lb > fb) {
@@ -444,11 +443,35 @@ app.get("*", (q, r) => {
   if (!q.path.startsWith("/api/")) r.sendFile(path.join(__dirname, "index.html"));
 });
 
-/* ── Start ───────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════
+   9. START SERVER + KEEP-ALIVE PING
+══════════════════════════════════════════════════════════════ */
 app.listen(PORT, () => {
   console.log(`\n🚀  EduAI v2  →  http://localhost:${PORT}`);
   console.log(`   Model:  ${MODEL}`);
   console.log(`   Keys:   ${KEY_POOL.length} (${KEY_POOL.length * RPM_LIMIT} RPM total capacity)`);
   console.log(`   Cache:  up to ${CACHE_MAX} results`);
   console.log(`   Health: http://localhost:${PORT}/api/health\n`);
+
+  // ── Keep-alive: ping /api/health every 14 minutes ──
+  // Prevents Render free tier from spinning down due to inactivity
+  const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  setInterval(async () => {
+    try {
+      const res = await fetch(`${RENDER_URL}/api/health`);
+      if (res.ok) console.log("[Keep-alive] ✅ Server pinged successfully");
+      else        console.log("[Keep-alive] ⚠️  Ping returned:", res.status);
+    } catch (e) {
+      console.log("[Keep-alive] ❌ Ping failed:", e.message);
+    }
+  }, 14 * 60 * 1000); // 14 minutes
 });
+```
+
+After saving the file, do these two things:
+
+**1. Add the environment variable in Render:**
+Go to Render Dashboard → EduAI → **Environment** → **Add Environment Variable**:
+```
+Key:   RENDER_EXTERNAL_URL
+Value: https://eduai-wsa4.onrender.com
