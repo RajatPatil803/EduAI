@@ -34,9 +34,9 @@
   };
 
   /* ══ 2. State ═════════════════════════════════════════════ */
-  let view      = "home";
-  let current   = null;
-  let activeTab = "conversation";
+  let view         = "home";
+  let current      = null;
+  let activeTab    = "conversation";
   let learningMode = "student";
   let _qaHistory   = [];
 
@@ -55,7 +55,10 @@
   const endProgress = () => {
     clearInterval(_progTimer);
     EL.navProgressFill.style.width = "100%";
-    setTimeout(() => { EL.navProgress.classList.remove("show"); EL.navProgressFill.style.width = "0%"; }, 600);
+    setTimeout(() => {
+      EL.navProgress.classList.remove("show");
+      EL.navProgressFill.style.width = "0%";
+    }, 600);
   };
 
   /* ══ 4. Toast ══════════════════════════════════════════════ */
@@ -97,7 +100,8 @@
       <div class="lesson-card" data-id="${lesson.localId}">
         <button class="lesson-card__del" data-del="${lesson.localId}" aria-label="Delete">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
             <path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
           </svg>
         </button>
@@ -166,25 +170,23 @@
   };
 
   const openLesson = (lesson) => {
-    current      = lesson;
-    activeTab    = "conversation";
-    _qaHistory   = []; // reset Q&A history for new lesson
+    current    = lesson;
+    activeTab  = "conversation";
+    _qaHistory = [];
 
     EL.lessonTitle.textContent = lesson.topic || "Lesson";
     EL.lessonDate.textContent  = new Date(lesson.createdAt)
       .toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 
-    // Learning mode badge
     const modeBadge = $("lessonModeBadge");
     if (modeBadge) {
       const m    = lesson.learningMode || "student";
       const meta = MODE_META[m] || MODE_META.student;
-      modeBadge.textContent    = meta.label;
-      modeBadge.className      = `lesson-mode-badge ${meta.cls}`;
-      modeBadge.style.display  = "";
+      modeBadge.textContent   = meta.label;
+      modeBadge.className     = `lesson-mode-badge ${meta.cls}`;
+      modeBadge.style.display = "";
     }
 
-    // Audio bar
     if (lesson.audioUrl) {
       EL.audioBar.hidden        = false;
       EL.audioEl.src            = lesson.audioUrl;
@@ -232,8 +234,12 @@
 
     const qaHistoryHTML = _qaHistory.map(msg => `
       <div class="qa-msg ${msg.role}">
-        <div class="qa-avatar ${msg.role === "user" ? "user-av" : "prof"}">${msg.role === "user" ? "👤" : "👨‍🏫"}</div>
-        <div class="qa-bubble ${msg.role === "user" ? "user" : "prof"} ${msg.loading ? "loading" : ""}">${esc(msg.text)}</div>
+        <div class="qa-avatar ${msg.role === "user" ? "user-av" : "prof"}">
+          ${msg.role === "user" ? "👤" : "👨‍🏫"}
+        </div>
+        <div class="qa-bubble ${msg.role === "user" ? "user" : "prof"} ${msg.loading ? "loading" : ""}">
+          ${esc(msg.text)}
+        </div>
       </div>`).join("");
 
     EL.tabPanel.innerHTML = `
@@ -256,26 +262,21 @@
         </div>
       </div>`;
 
-    // Bubble highlight on click
     EL.tabPanel.querySelectorAll(".bubble").forEach((b) => {
       b.addEventListener("click", () => b.classList.toggle("lit"));
     });
 
-    // Auto-resize textarea
     const qaInput = $("qaInput");
     qaInput?.addEventListener("input", () => {
       qaInput.style.height = "auto";
       qaInput.style.height = Math.min(qaInput.scrollHeight, 120) + "px";
     });
-
-    // Send on Enter
     qaInput?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQA(); }
     });
 
     $("qaSend")?.addEventListener("click", sendQA);
 
-    // Scroll history to bottom
     const hist = $("qaHistory");
     if (hist) hist.scrollTop = hist.scrollHeight;
   };
@@ -287,7 +288,7 @@
     if (!q || !current) return;
 
     _qaHistory.push({ role: "user", text: q });
-    input.value = "";
+    input.value        = "";
     input.style.height = "auto";
     if (sendBtn) sendBtn.disabled = true;
 
@@ -295,8 +296,15 @@
     renderConversation(current);
 
     try {
-      const ctx = (current.conversation || [])
-        .map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 1000);
+      // Build rich context: original source text + conversation
+      const ctx = [
+        current.sourceText
+          ? `Original content the student submitted:\n${current.sourceText.slice(0, 2000)}`
+          : "",
+        `Lesson conversation:\n${(current.conversation || [])
+          .map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 800)}`,
+      ].filter(Boolean).join("\n\n");
+
       const answer = await API.askQuestion(q, current.topic, ctx);
       _qaHistory[_qaHistory.length - 1] = { role: "prof", text: answer };
     } catch {
@@ -323,10 +331,12 @@
             <div class="q-card__text">
               <span class="q-card__num" style="color:${color}">Q${i+1}.</span>${esc(q.q)}
             </div>
-            <button class="reveal-btn" style="color:${color};border-color:${color};background:${color}22"
+            <button class="reveal-btn"
+              style="color:${color};border-color:${color};background:${color}22"
               data-reveal="${key}-${i}">Reveal</button>
           </div>
-          <div class="q-card__ans" data-ans="${key}-${i}" style="border-color:${color}33;background:${color}0d" hidden>
+          <div class="q-card__ans" data-ans="${key}-${i}"
+            style="border-color:${color}33;background:${color}0d" hidden>
             <span class="ans-lbl" style="color:${color}">✓ Answer:</span>${esc(q.a)}
           </div>
         </div>`).join("");
@@ -344,7 +354,9 @@
     EL.tabPanel.innerHTML = `
       <h2 class="tab-title">🧠 Quiz &amp; Practice</h2>
       <div class="quiz-prog">
-        <div class="quiz-prog__track"><div class="quiz-prog__fill" id="qBar" style="width:0%"></div></div>
+        <div class="quiz-prog__track">
+          <div class="quiz-prog__fill" id="qBar" style="width:0%"></div>
+        </div>
         <span class="quiz-prog__lbl" id="qLbl">0 / ${totalQ} revealed</span>
       </div>
       ${levelsHTML}`;
@@ -358,8 +370,8 @@
           btn.remove();
           revealed++;
           const pct = Math.round((revealed / totalQ) * 100);
-          $("qBar").style.width  = `${pct}%`;
-          $("qLbl").textContent  = `${revealed} / ${totalQ} revealed`;
+          $("qBar").style.width = `${pct}%`;
+          $("qLbl").textContent = `${revealed} / ${totalQ} revealed`;
         }
       });
     });
@@ -369,7 +381,7 @@
   const renderSummary = (l) => {
     const pts = (l.summary || []).map((p, i) => `
       <div class="key-pt">
-        <div class="key-pt__num">${i+1}</div>
+        <div class="key-pt__num">${i + 1}</div>
         <div class="key-pt__text">${esc(p)}</div>
       </div>`).join("");
     EL.tabPanel.innerHTML = `
@@ -418,13 +430,14 @@
       `<span class="cs-pill teal">${esc(t)}</span>`
     ).join("");
 
-    const modeColors = { student:"var(--accent)", kids:"var(--teal)", exam:"var(--gold)" };
+    const modeColors = { student: "var(--accent)", kids: "var(--teal)", exam: "var(--gold)" };
     const modeColor  = modeColors[l.learningMode || "student"];
-    const modeLabel  = { student:"Student", kids:"Kids 🧸", exam:"Exam 📝" }[l.learningMode || "student"];
+    const modeLabel  = { student: "Student", kids: "Kids 🧸", exam: "Exam 📝" }[l.learningMode || "student"];
 
     EL.tabPanel.innerHTML = `
       <div class="cheatsheet">
-        <div class="cheatsheet__header" style="background:color-mix(in srgb,${modeColor} 8%,var(--card))">
+        <div class="cheatsheet__header"
+          style="background:color-mix(in srgb,${modeColor} 8%,var(--card))">
           <div class="cheatsheet__header-left">
             <span class="cheatsheet__icon">📄</span>
             <div>
@@ -462,7 +475,7 @@
 
   /* ─ Visual Map ─ */
   const renderVisual = (l) => {
-    const typeEmoji = { diagram:"📊", chart:"📈", illustration:"🖼️" };
+    const typeEmoji = { diagram: "📊", chart: "📈", illustration: "🖼️" };
     const visuals = (l.visual_suggestions || []).map((v) => `
       <div class="vis-item">
         <div class="vis-item__icon">${typeEmoji[v.type] || "🖼️"}</div>
@@ -475,8 +488,8 @@
         </div>
       </div>`).join("");
 
-    const script = l.audio_script || {};
-    const colHTML = (role, color) => `
+    const script   = l.audio_script || {};
+    const colHTML  = (role, color) => `
       <div>
         <div class="audio-col__lbl" style="color:${color}">${role} lines</div>
         ${(script[role] || []).slice(0, 4).map((line) =>
@@ -484,8 +497,12 @@
       </div>`;
 
     const ttsBtn = l.audioUrl
-      ? `<p style="color:var(--teal);font-size:13px;margin-top:16px">🔊 Audio already generated — use the player above.</p>`
-      : `<button class="btn-primary" id="btnTTS" style="margin-top:16px">🔊 Generate Spoken Audio (ElevenLabs)</button>`;
+      ? `<p style="color:var(--teal);font-size:13px;margin-top:16px">
+           🔊 Audio already generated — use the player above.
+         </p>`
+      : `<button class="btn-primary" id="btnTTS" style="margin-top:16px">
+           🔊 Generate Spoken Audio (ElevenLabs)
+         </button>`;
 
     EL.tabPanel.innerHTML = `
       <h2 class="tab-title">🗺️ Visual Learning Map</h2>
@@ -508,8 +525,9 @@
     EL.btnGenerate.innerHTML = `<span class="spin"></span> Processing…`;
 
     try {
-      const modeLabel = { student:"🎒 Student", kids:"🧸 Kids", exam:"📝 Exam" };
+      const modeLabel = { student: "🎒 Student", kids: "🧸 Kids", exam: "📝 Exam" };
       EL.btnGenerate.innerHTML = `<span class="spin"></span> ${modeLabel[learningMode] || ""} Mode…`;
+
       const lesson = await API.generateLesson(text, (pct) => {
         EL.navProgressFill.style.width = `${pct}%`;
         if (pct === 55) EL.btnGenerate.innerHTML = `<span class="spin"></span> AI thinking…`;
@@ -520,6 +538,7 @@
       lesson.audioUrl     = null;
       lesson.synced       = false;
       lesson.learningMode = learningMode;
+      lesson.sourceText   = text.trim().slice(0, 3000); // store original for Q&A context
 
       await DB.save(lesson);
       refreshNav();
@@ -540,14 +559,21 @@
 
   /* ══ 11. TTS ═══════════════════════════════════════════════ */
   const speakWithBrowser = (text) => {
-    if (!window.speechSynthesis) { toastError("⚠️ Your browser does not support speech synthesis."); return; }
+    if (!window.speechSynthesis) {
+      toastError("⚠️ Your browser does not support speech synthesis.");
+      return;
+    }
     window.speechSynthesis.cancel();
-    const CHUNK = 200;
+    const CHUNK  = 200;
     const chunks = [];
     for (let i = 0; i < text.length; i += CHUNK) chunks.push(text.slice(i, i + CHUNK));
     let idx = 0;
     const speakNext = () => {
-      if (idx >= chunks.length) { EL.audioPlay.textContent = "▶"; EL.audioLabel.textContent = "Playback complete"; return; }
+      if (idx >= chunks.length) {
+        EL.audioPlay.textContent  = "▶";
+        EL.audioLabel.textContent = "Playback complete";
+        return;
+      }
       const utt    = new SpeechSynthesisUtterance(chunks[idx++]);
       utt.rate     = 0.95;
       utt.pitch    = 1.0;
@@ -572,13 +598,14 @@
     if (btn) { btn.disabled = true; btn.textContent = "Generating audio…"; }
     try {
       const scriptText = (current.audio_script?.professor || []).join(" ");
-      const url = await API.generateAudio(current.localId, scriptText);
+      const url        = await API.generateAudio(current.localId, scriptText);
       DB.patch(current.localId, { audioUrl: url });
       current.audioUrl          = url;
       EL.audioBar.hidden        = false;
       EL.audioEl.src            = url;
       EL.audioLabel.textContent = "ElevenLabs audio ready ✨";
-      EL.audioEl.play().then(() => { EL.audioPlay.textContent = "⏸"; audioPlaying = true; })
+      EL.audioEl.play()
+        .then(() => { EL.audioPlay.textContent = "⏸"; audioPlaying = true; })
         .catch(() => { EL.audioLabel.textContent = "Click ▶ to play ElevenLabs audio"; });
       renderTab("visual");
     } catch (err) {
@@ -616,7 +643,9 @@
     EL.audioFill.style.width = `${(EL.audioEl.currentTime / EL.audioEl.duration) * 100}%`;
   });
   EL.audioEl.addEventListener("ended", () => {
-    EL.audioPlay.textContent = "▶"; audioPlaying = false; EL.audioFill.style.width = "0%";
+    EL.audioPlay.textContent = "▶";
+    audioPlaying             = false;
+    EL.audioFill.style.width = "0%";
   });
 
   /* ══ 13. Event listeners ═══════════════════════════════════ */
@@ -640,8 +669,8 @@
   // Toast close
   EL.toastClose.addEventListener("click", () => {
     clearTimeout(_toastTimer);
-    EL.toast.hidden    = true;
-    EL.toast.className = "toast";
+    EL.toast.hidden          = true;
+    EL.toast.className       = "toast";
     EL.toastText.textContent = "";
   });
 
@@ -665,12 +694,13 @@
   EL.btnGenerate.addEventListener("click", () => handleGenerate(EL.inputText.value));
 
   // Drop zone
-  EL.dropZone.addEventListener("click",    () => EL.fileInput.click());
-  EL.dropZone.addEventListener("keydown",  (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
-  EL.dropZone.addEventListener("dragover", (e) => { e.preventDefault(); EL.panelFile.classList.add("drag"); });
-  EL.dropZone.addEventListener("dragleave",() => EL.panelFile.classList.remove("drag"));
+  EL.dropZone.addEventListener("click",     () => EL.fileInput.click());
+  EL.dropZone.addEventListener("keydown",   (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
+  EL.dropZone.addEventListener("dragover",  (e) => { e.preventDefault(); EL.panelFile.classList.add("drag"); });
+  EL.dropZone.addEventListener("dragleave", () => EL.panelFile.classList.remove("drag"));
   EL.dropZone.addEventListener("drop", async (e) => {
-    e.preventDefault(); EL.panelFile.classList.remove("drag");
+    e.preventDefault();
+    EL.panelFile.classList.remove("drag");
     const file = e.dataTransfer.files?.[0];
     if (file) await handleFile(file);
   });
@@ -692,7 +722,10 @@
       EL.btnGenerate.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Lesson`;
       return;
     }
-    if (!text.trim()) { toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly."); return; }
+    if (!text.trim()) {
+      toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly.");
+      return;
+    }
     await handleGenerate(text);
   };
 
@@ -713,7 +746,7 @@
         EL.audioEl.play();
         EL.audioPlay.textContent  = "⏸";
         EL.audioLabel.textContent = "ElevenLabs audio ✨";
-        audioPlaying = true;
+        audioPlaying              = true;
       } catch (err) {
         toastError("🔊 ElevenLabs error: " + err.message);
       } finally {
@@ -734,7 +767,7 @@
 
   /* ══ 14. Utilities ═════════════════════════════════════════ */
   const esc = (s) => String(s ?? "")
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
   /* ══ 15. Boot ══════════════════════════════════════════════ */
   const boot = async () => {
