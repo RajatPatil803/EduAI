@@ -1,46 +1,160 @@
 /**
  * server.js — EduAI v2
- * Features: Learning Mode (kids/student/exam), Cheat Sheet, Gemini cascade
+ * ─────────────────────────────────────────────────────────────────
+ * STRATEGY: Zero rate limits using:
+ *   1. KEY POOL     — rotate across multiple free Gemini API keys
+ *   2. SMART CACHE  — identical content never hits API twice
+ *   3. FASTEST MODEL — gemini-2.0-flash-lite (fastest free Gemini)
+ *   4. SINGLE MODEL  — no fallback switching, pure Gemini only
+ *
+ * HOW TO ADD MORE KEYS (get more from aistudio.google.com):
+ *   .env:  GEMINI_API_KEY_1=AIza...
+ *          GEMINI_API_KEY_2=AIza...
+ *          GEMINI_API_KEY_3=AIza...  (add as many as you want)
+ * ─────────────────────────────────────────────────────────────────
  */
 
 require("dotenv").config();
 const express    = require("express");
 const cors       = require("cors");
 const path       = require("path");
+const crypto     = require("crypto");
 const mongoose   = require("mongoose");
 const { ElevenLabsClient } = require("elevenlabs");
-const rateLimit  = require("express-rate-limit");
 
-/* ══ Validate env ══════════════════════════════════════════ */
-["GEMINI_API_KEY","MONGO_URI","ELEVENLABS_API_KEY"].forEach((k) => {
-  if (!process.env[k]) { console.error(`\n❌  Missing: ${k}\n`); process.exit(1); }
-});
+/* ══════════════════════════════════════════════════════════════
+   1. GEMINI KEY POOL
+   Reads GEMINI_API_KEY_1, _2, _3 ... from .env
+   Falls back to GEMINI_API_KEY if no numbered keys found
+══════════════════════════════════════════════════════════════ */
+const buildKeyPool = () => {
+  const keys = [];
+  // Collect all GEMINI_API_KEY_N keys
+  for (let i = 1; i <= 20; i++) {
+    const k = process.env[`GEMINI_API_KEY_${i}`];
+    if (k?.startsWith("AIza")) keys.push({ key: k, id: i, callsThisMin: 0, resetAt: 0 });
+  }
+  // Fallback to single GEMINI_API_KEY
+  if (keys.length === 0) {
+    const k = process.env.GEMINI_API_KEY;
+    if (k?.startsWith("AIza")) keys.push({ key: k, id: 0, callsThisMin: 0, resetAt: 0 });
+  }
+  if (keys.length === 0) {
+    console.error("\n❌  No Gemini API keys found!");
+    console.error("   Add GEMINI_API_KEY_1, GEMINI_API_KEY_2 ... to your .env\n");
+    process.exit(1);
+  }
+  console.log(`✅  Gemini key pool: ${keys.length} key(s) loaded`);
+  return keys;
+};
 
-/* ══ Gemini models (cascade on rate limit) ═════════════════ */
-const MODELS = [
-  "gemini-1.5-flash",        // stable, 15 RPM, 1500 RPD free
-  "gemini-1.5-flash-8b",     // fastest fallback, 15 RPM free
-  "gemini-2.0-flash",        // newest stable fallback
-];
-const geminiUrl = (m) =>
-  `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+const KEY_POOL    = buildKeyPool();
+const RPM_LIMIT   = 8;    // gemini-2.5-flash free: 10 RPM — use 8 to be safe
+const MODEL       = "gemini-2.5-flash";  // Current stable model — free tier: 10 RPM, 250 RPD
 
-/* ══ ElevenLabs ════════════════════════════════════════════ */
+// IMPORTANT: Keys from the SAME Google account/project share quota.
+// For true isolation, each GEMINI_API_KEY_N must come from a DIFFERENT
+// Google account (different Gmail) AND be created in a NEW project in AI Studio.
+// Keys from the same account = same quota = no benefit from rotation.
+
+let _poolIndex = 0; // Round-robin pointer
+
+/* ══════════════════════════════════════════════════════════════
+   2. KEY ROTATION LOGIC
+   Each key gets its own 60-second window counter.
+   When a key is exhausted, the next key takes over.
+   If ALL keys exhausted → wait for the fastest reset.
+══════════════════════════════════════════════════════════════ */
+const getNextKey = () => {
+  const now = Date.now();
+
+  // Reset counters for keys whose window has expired
+  KEY_POOL.forEach(k => {
+    if (now >= k.resetAt) { k.callsThisMin = 0; k.resetAt = now + 60_000; }
+  });
+
+  // Find an available key (round-robin for load spreading)
+  for (let i = 0; i < KEY_POOL.length; i++) {
+    const idx = (_poolIndex + i) % KEY_POOL.length;
+    const k   = KEY_POOL[idx];
+    if (k.callsThisMin < RPM_LIMIT) {
+      _poolIndex = (idx + 1) % KEY_POOL.length; // advance pointer
+      k.callsThisMin++;
+      console.log(`[Pool] Using key #${k.id} (${k.callsThisMin}/${RPM_LIMIT} calls this min)`);
+      return { key: k.key, available: true, waitMs: 0 };
+    }
+  }
+
+  // All keys exhausted — find the soonest reset
+  const soonestReset = Math.min(...KEY_POOL.map(k => k.resetAt));
+  const waitMs       = Math.max(0, soonestReset - now) + 500; // +500ms buffer
+  console.log(`[Pool] All keys at limit. Next slot in ${(waitMs/1000).toFixed(1)}s`);
+  return { key: null, available: false, waitMs };
+};
+
+const markKeyRateLimited = (keyValue, retryAfterSec = 60) => {
+  const k = KEY_POOL.find(k => k.key === keyValue);
+  if (k) {
+    k.callsThisMin = RPM_LIMIT; // Mark as fully used
+    k.resetAt      = Date.now() + retryAfterSec * 1000;
+    console.log(`[Pool] Key #${k.id} rate limited — reset in ${retryAfterSec}s`);
+  }
+};
+
+/* ══════════════════════════════════════════════════════════════
+   3. RESPONSE CACHE
+   Hash the (text + mode) → store result in memory.
+   Identical content returns instantly without any API call.
+   Cache holds last 200 results, auto-evicts oldest entries.
+══════════════════════════════════════════════════════════════ */
+const CACHE     = new Map();
+const CACHE_MAX = 200;
+
+const cacheKey = (text, mode) =>
+  crypto.createHash("md5").update(`${mode}::${text.slice(0, 500)}`).digest("hex");
+
+const cacheGet = (key) => {
+  const entry = CACHE.get(key);
+  if (!entry) return null;
+  console.log(`[Cache] ✅ HIT — serving from cache (no API call)`);
+  return entry.result;
+};
+
+const cacheSet = (key, result) => {
+  if (CACHE.size >= CACHE_MAX) {
+    // Evict oldest entry
+    CACHE.delete(CACHE.keys().next().value);
+  }
+  CACHE.set(key, { result, ts: Date.now() });
+};
+
+/* ══════════════════════════════════════════════════════════════
+   4. ENVIRONMENT & SERVICES
+══════════════════════════════════════════════════════════════ */
+if (!process.env.MONGO_URI)          { console.error("❌  Missing: MONGO_URI");          process.exit(1); }
+if (!process.env.ELEVENLABS_API_KEY) { console.error("❌  Missing: ELEVENLABS_API_KEY"); process.exit(1); }
+
 const eleven = new ElevenLabsClient({ apiKey: process.env.ELEVENLABS_API_KEY });
 
-/* ══ MongoDB ═══════════════════════════════════════════════ */
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log("✅  MongoDB connected"))
   .catch((e) => { console.error("❌  MongoDB:", e.message); process.exit(1); });
 
+/* ══════════════════════════════════════════════════════════════
+   5. MONGODB SCHEMA
+══════════════════════════════════════════════════════════════ */
 const lessonSchema = new mongoose.Schema({
   localId:            { type: String, index: true },
   learningMode:       { type: String, default: "student", enum: ["student","kids","exam"] },
   topic:              { type: String, required: true },
   conversation:       [{ speaker: String, text: String }],
   simple_explanation: String,
-  questions:          { basic: [{ q:String, a:String }], medium: [{ q:String, a:String }], advanced: [{ q:String, a:String }] },
-  summary:            [String],
+  questions: {
+    basic:    [{ q: String, a: String }],
+    medium:   [{ q: String, a: String }],
+    advanced: [{ q: String, a: String }],
+  },
+  summary:   [String],
   cheatsheet: {
     key_terms:    [{ term: String, definition: String }],
     core_concepts:[String],
@@ -57,46 +171,38 @@ const lessonSchema = new mongoose.Schema({
 
 const Lesson = mongoose.model("Lesson", lessonSchema);
 
-/* ══ Mode-aware prompts ════════════════════════════════════ */
-const MODE_CONFIG = {
-  student: {
-    label: "Student",
-    rules: `- conversation: 12-16 exchanges, balanced depth, engaging
-- language: clear, helpful analogies, minimal jargon
+/* ══════════════════════════════════════════════════════════════
+   6. PROMPTS (mode-aware)
+══════════════════════════════════════════════════════════════ */
+const MODE_RULES = {
+  student: `- conversation: 12-14 exchanges, balanced depth, engaging
+- language: clear, avoids jargon, uses analogies
 - questions: basic=recall, medium=comprehension, advanced=application
-- cheatsheet: balanced key terms, core concepts, exam-ready Q&A`,
-  },
-  kids: {
-    label: "Kids",
-    rules: `- conversation: 10-12 exchanges, VERY simple words (age 8-12 level)
-- use fun analogies: toys, games, food, animals, cartoons
-- zero technical jargon — explain any term immediately in simple words
-- questions: all recall-level, fun, encouraging, no trick questions
-- cheatsheet: only essential points, very short sentences, fun language`,
-  },
-  exam: {
-    label: "Exam",
-    rules: `- conversation: 14-18 exchanges, precise technical language, exam-focused
-- include definitions, formulas, edge cases, common exam traps
-- questions: basic=exact definitions, medium=application with working, advanced=synthesis+analysis
-- cheatsheet: dense with formulas, exact definitions, key distinctions, mnemonics
-- memory_tips: include 3 exam-strategy tips (e.g. how to remember, common mistakes)`,
-  },
+- cheatsheet: balanced key terms, core concepts, and Q&A`,
+
+  kids: `- conversation: 10-12 exchanges, VERY simple words (age 8-12)
+- use fun analogies: toys, games, food, animals
+- zero technical jargon — explain every term immediately
+- questions: all recall-level, fun and encouraging
+- cheatsheet: short sentences, fun language`,
+
+  exam: `- conversation: 14-16 exchanges, precise technical language
+- include definitions, formulas, edge cases, exam traps
+- questions: basic=exact definitions, medium=application, advanced=synthesis
+- cheatsheet: dense with formulas, exact definitions, memory tricks`,
 };
 
-const buildPrompt = (mode = "student") => {
-  const cfg = MODE_CONFIG[mode] || MODE_CONFIG.student;
-  return `You are an intelligent educational AI. Generate a structured JSON learning experience for "${mode.toUpperCase()}" mode.
+const buildPrompt = (mode) => `You are an educational AI. Generate a JSON learning experience for "${mode.toUpperCase()}" mode.
 
-Return ONLY valid JSON — no markdown fences, no preamble:
+Return ONLY a valid JSON object — no markdown, no preamble, no explanation:
 {
   "topic": "string",
-  "conversation": [{"speaker":"Student","text":"..."},{"speaker":"Professor","text":"..."}],
+  "conversation": [{"speaker":"Student","text":"string"},{"speaker":"Professor","text":"string"}],
   "simple_explanation": "string",
   "questions": {
-    "basic":    [{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}],
-    "medium":   [{"q":"...","a":"..."},{"q":"...","a":"..."},{"q":"...","a":"..."}],
-    "advanced": [{"q":"...","a":"..."},{"q":"...","a":"..."}]
+    "basic":    [{"q":"string","a":"string"},{"q":"string","a":"string"},{"q":"string","a":"string"}],
+    "medium":   [{"q":"string","a":"string"},{"q":"string","a":"string"},{"q":"string","a":"string"}],
+    "advanced": [{"q":"string","a":"string"},{"q":"string","a":"string"}]
   },
   "summary": ["string","string","string","string","string"],
   "cheatsheet": {
@@ -110,148 +216,257 @@ Return ONLY valid JSON — no markdown fences, no preamble:
   "audio_script": {"student":["string"],"professor":["string"]}
 }
 
-Rules for ${mode.toUpperCase()} mode:
-${cfg.rules}
+${mode.toUpperCase()} mode rules:
+${MODE_RULES[mode]}
 
-General rules:
-- summary: exactly 5 strings
-- cheatsheet.key_terms: 4-8 terms
-- cheatsheet.formulas: empty array [] if topic has no formulas
-- visual_suggestions: 3-6 items with realistic timestamps
-- Return ONLY the JSON object`;
+General: summary = exactly 5 strings, cheatsheet.formulas = [] if no formulas apply.`;
+
+/* ══════════════════════════════════════════════════════════════
+   7. GEMINI CALL (single model, key pool rotation)
+══════════════════════════════════════════════════════════════ */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const geminiUrl = (key) =>
+  `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${key}`;
+
+const callGemini = async (userPrompt, systemPrompt) => {
+  // Try up to (keys × 2) times total
+  const maxAttempts = KEY_POOL.length * 2;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const { key, available, waitMs } = getNextKey();
+
+    if (!available) {
+      console.log(`[Gemini] All keys busy — waiting ${(waitMs/1000).toFixed(1)}s`);
+      await sleep(waitMs);
+      // After waiting, try again from top of loop
+      const slot = getNextKey();
+      if (!slot.available) continue;
+    }
+
+    const useKey = key || getNextKey().key;
+    if (!useKey) { await sleep(3000); continue; }
+
+    console.log(`[Gemini] Calling ${MODEL} (attempt ${attempt + 1})`);
+
+    try {
+      const res = await fetch(geminiUrl(useKey), {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents:           [{ parts: [{ text: userPrompt  }] }],
+          generationConfig: {
+            temperature:     0.7,
+            maxOutputTokens: 6000,
+          }
+        })
+      });
+
+      // ── Success ──────────────────────────────────────────
+      if (res.ok) {
+        const data = await res.json();
+        let raw    = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+        if (!raw) { console.warn("[Gemini] Empty response"); continue; }
+
+        // Strip markdown fences Gemini sometimes adds
+        raw = raw.replace(/^```json\s*/im, "").replace(/^```\s*/im, "").replace(/```\s*$/im, "").trim();
+
+        // Extract just the JSON object (handles any preamble text)
+        const fb = raw.indexOf("{");
+        const lb = raw.lastIndexOf("}");
+        if (fb !== -1 && lb > fb) raw = raw.slice(fb, lb + 1);
+
+        // Fix trailing commas — common Gemini bug
+        raw = raw.replace(/,\s*([}\]])/g, "$1");
+
+        try {
+          JSON.parse(raw); // Validate it is real JSON
+          console.log(`[Gemini] ✅ Success — ${raw.length} chars`);
+          return { ok: true, result: raw };
+        } catch {
+          console.error("[Gemini] ❌ Invalid JSON:", raw.slice(0, 150));
+          continue; // retry with next key
+        }
+      }
+
+      // ── Rate limit ────────────────────────────────────────
+      if (res.status === 429) {
+        const errBody     = await res.json().catch(() => ({}));
+        const retryAfter  = parseInt(
+          errBody?.error?.details
+            ?.find(d => d["@type"]?.includes("RetryInfo"))
+            ?.retryDelay?.replace("s","") || "60"
+        );
+        markKeyRateLimited(useKey, retryAfter);
+        continue; // Immediately try next key
+      }
+
+      // ── Auth error — fail fast ─────────────────────────
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, status: 401, error: "Invalid Gemini API key. Check your .env file." };
+      }
+
+      console.error(`[Gemini] HTTP ${res.status}`);
+      await sleep(2000);
+
+    } catch (networkErr) {
+      console.error("[Gemini] Network error:", networkErr.message);
+      await sleep(2000);
+    }
+  }
+
+  return { ok: false, status: 503, error: "Gemini API is currently busy. Please wait 60 seconds and try again." };
 };
 
-/* ══ Express ════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════
+   8. EXPRESS APP
+══════════════════════════════════════════════════════════════ */
 const app  = express();
 const PORT = process.env.PORT || 4000;
 app.use(cors());
 app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname)));
-const limiter = rateLimit({ windowMs:60_000, max:15, message:{error:"Too many requests."} });
-app.use("/api/generate", limiter);
-app.use("/api/tts",      limiter);
 
-/* ══ Gemini cascade helper ═════════════════════════════════ */
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const callGemini = async (userPrompt, systemPrompt) => {
-  for (let m = 0; m < MODELS.length; m++) {
-    const model = MODELS[m];
-    let lastError = null;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      console.log(`[Gemini] model=${model} attempt=${attempt}`);
-      const res = await fetch(geminiUrl(model), {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: userPrompt }] }],
-          generationConfig: {
-            temperature:     0.7,
-            maxOutputTokens: 6000,
-            responseMimeType: "application/json",
-          }
-        })
-      });
-      if (res.ok) {
-        const data   = await res.json();
-        let result   = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-        if (result) {
-          // Belt-and-suspenders cleanup even with responseMimeType
-          const firstBrace = result.indexOf("{");
-          const lastBrace  = result.lastIndexOf("}");
-          if (firstBrace !== -1 && lastBrace > firstBrace) {
-            result = result.slice(firstBrace, lastBrace + 1);
-          }
-          result = result.replace(/,\s*([}\]])/g, "$1");
-
-          // Validate it's parseable before returning
-          try {
-            JSON.parse(result);
-            console.log(`[Gemini] ✅ model=${model} chars=${result.length}`);
-            return { ok:true, result };
-          } catch(parseErr) {
-            console.error(`[Gemini] ❌ Invalid JSON from ${model}:`, result.slice(0,200));
-            // Don't return — fall through to retry/next model
-          }
-        }
-
-        console.warn(`[Gemini] ⚠️ Empty or invalid content from ${model}`);
-      }
-      const status  = res.status;
-      const errBody = await res.json().catch(() => ({}));
-      if (status === 401 || status === 403) return { ok:false, status:401, error:"Invalid Gemini API key." };
-      if (status === 429) {
-        const waitSec = errBody?.error?.details?.find(d=>d["@type"]?.includes("RetryInfo"))?.retryDelay?.replace("s","") || 12;
-        await sleep(parseInt(waitSec)*1000);
-        lastError = "rate_limit"; break;
-      }
-      lastError = `HTTP ${status}`;
-      if (attempt < 2) await sleep(3000);
-    }
-    if (lastError === "rate_limit" && m < MODELS.length-1) console.log(`[Gemini] switching → ${MODELS[m+1]}`);
-  }
-  return { ok:false, status:503, error:"All Gemini models rate limited. Wait 1 minute and retry." };
-};
-
-/* ══ POST /api/generate ════════════════════════════════════ */
+/* ── POST /api/generate ─────────────────────────────────── */
 app.post("/api/generate", async (req, res) => {
   const { text, mode = "student" } = req.body;
   if (!text?.trim()) return res.status(400).json({ error: "text is required." });
   if (!["student","kids","exam"].includes(mode))
-    return res.status(400).json({ error: "mode must be student, kids, or exam." });
+    return res.status(400).json({ error: "mode must be: student, kids, or exam." });
 
-  const truncated    = text.trim().slice(0, 8000);
-  const systemPrompt = buildPrompt(mode);
-  const userPrompt   = `Convert this academic content into a ${mode} learning experience:\n\n${truncated}`;
+  const truncated = text.trim().slice(0, 8000);
+  console.log(`\n[/generate] mode=${mode} chars=${truncated.length}`);
 
-  console.log(`[/api/generate] mode=${mode} chars=${truncated.length}`);
+  // ── Check cache first ──────────────────────────────────
+  const ck     = cacheKey(truncated, mode);
+  const cached = cacheGet(ck);
+  if (cached) return res.json({ result: cached, mode, fromCache: true });
 
-  try {
-    const { ok, result, status, error } = await callGemini(userPrompt, systemPrompt);
-    if (!ok) return res.status(status||500).json({ error });
-    return res.json({ result, mode });
-  } catch (err) {
-    return res.status(500).json({ error: "Unexpected error. Please try again." });
-  }
+  // ── Call Gemini ────────────────────────────────────────
+  const sysPrompt  = buildPrompt(mode);
+  const userPrompt = `Convert this academic content into a ${mode} learning experience:\n\n${truncated}`;
+
+  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt);
+  if (!ok) return res.status(status || 500).json({ error });
+
+  // ── Cache result ───────────────────────────────────────
+  cacheSet(ck, result);
+
+  return res.json({ result, mode, fromCache: false });
 });
 
-/* ══ POST /api/tts ═════════════════════════════════════════ */
+/* ── POST /api/tts ──────────────────────────────────────── */
 app.post("/api/tts", async (req, res) => {
   const { text } = req.body;
   if (!text?.trim()) return res.status(400).json({ error: "text is required." });
+
   const voiceId = process.env.ELEVENLABS_VOICE_ID_PROFESSOR || "JBFqnCBsd6RMkjVDRZzb";
   try {
     const stream = await eleven.textToSpeech.convertAsStream(voiceId, {
-      text: text.slice(0,3000), model_id:"eleven_multilingual_v2",
-      voice_settings:{ stability:0.5, similarity_boost:0.75 }, output_format:"mp3_44100_128",
+      text:           text.slice(0, 3000),
+      model_id:       "eleven_multilingual_v2",
+      voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      output_format:  "mp3_44100_128",
     });
-    res.setHeader("Content-Type","audio/mpeg");
-    res.setHeader("Cache-Control","public, max-age=86400");
+    res.setHeader("Content-Type",  "audio/mpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
     for await (const chunk of stream) res.write(chunk);
     res.end();
   } catch (err) {
-    const s = err.statusCode||err.status||500;
-    if (s===401) return res.status(401).json({ error:"ElevenLabs key invalid — update in Render environment." });
-    if (s===429) return res.status(429).json({ error:"ElevenLabs character limit reached." });
+    const s = err.statusCode || err.status || 500;
+    if (s === 401) return res.status(401).json({ error: "ElevenLabs key invalid — update in Render." });
+    if (s === 429) return res.status(429).json({ error: "ElevenLabs character limit reached." });
     res.status(500).json({ error: err.message });
   }
 });
 
-/* ══ MongoDB CRUD ══════════════════════════════════════════ */
-app.get("/api/lessons",       async (_,res) => { try { res.json(await Lesson.find().sort({createdAt:-1}).lean()); } catch(e){ res.status(500).json({error:e.message}); }});
-app.post("/api/lessons",      async (req,res) => { try { res.status(201).json(await Lesson.create(req.body)); } catch(e){ res.status(400).json({error:e.message}); }});
-app.put("/api/lessons/:id",   async (req,res) => { try { const l=await Lesson.findByIdAndUpdate(req.params.id,req.body,{new:true}); if(!l) return res.status(404).json({error:"Not found"}); res.json(l); } catch(e){ res.status(400).json({error:e.message}); }});
-app.delete("/api/lessons/:id",async (req,res) => { try { await Lesson.findByIdAndDelete(req.params.id); res.json({ok:true}); } catch(e){ res.status(400).json({error:e.message}); }});
+/* ── POST /api/generate-qa ──────────────────────────────── */
+// Answers user questions in the context of the lesson
+app.post("/api/generate-qa", async (req, res) => {
+  const { question, context } = req.body;
+  if (!question?.trim()) return res.status(400).json({ error: "question is required." });
 
-/* ══ Health ════════════════════════════════════════════════ */
-app.get("/api/health", (_,res) => res.json({ status:"ok", models:MODELS, db:mongoose.connection.readyState===1?"connected":"disconnected" }));
-app.get("*", (req,res) => { if(!req.path.startsWith("/api/")) res.sendFile(path.join(__dirname,"index.html")); });
+  const sysPrompt = `You are a helpful professor. The student has just studied a lesson and is asking a follow-up question.
+Answer clearly, concisely (2-4 sentences), and in a friendly teaching style.
+Use the lesson context provided to give a relevant, accurate answer.
+Never make up facts. If unsure, say so.`;
 
-/* ══ Start ══════════════════════════════════════════════════ */
+  const userPrompt = `Lesson context:
+${context || ""}
+
+Student question: ${question}`;
+
+  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt);
+  if (!ok) return res.status(status || 500).json({ error });
+
+  // Result may be JSON or plain text — handle both
+  let answer = result;
+  try {
+    const parsed = JSON.parse(result);
+    answer = parsed.answer || parsed.text || parsed.response || result;
+  } catch { /* plain text answer — use as-is */ }
+
+  return res.json({ answer: String(answer).trim() });
+});
+
+/* ── MongoDB CRUD ────────────────────────────────────────── */
+app.get("/api/lessons",        async (_,r) => { try { r.json(await Lesson.find().sort({createdAt:-1}).lean()); } catch(e){ r.status(500).json({error:e.message}); }});
+app.post("/api/lessons",       async (q,r) => { try { r.status(201).json(await Lesson.create(q.body)); } catch(e){ r.status(400).json({error:e.message}); }});
+app.put("/api/lessons/:id",    async (q,r) => { try { const l=await Lesson.findByIdAndUpdate(q.params.id,q.body,{new:true}); if(!l) return r.status(404).json({error:"Not found"}); r.json(l); } catch(e){ r.status(400).json({error:e.message}); }});
+app.delete("/api/lessons/:id", async (q,r) => { try { await Lesson.findByIdAndDelete(q.params.id); r.json({ok:true}); } catch(e){ r.status(400).json({error:e.message}); }});
+
+/* ── POST /api/qa — ask a question about a lesson ──────────── */
+app.post("/api/qa", async (req, res) => {
+  const { question, topic, context } = req.body;
+  if (!question?.trim()) return res.status(400).json({ error: "question is required." });
+
+  const sysPrompt = `You are a helpful professor answering a student's question about "${topic || "this topic"}".
+Give a clear, concise answer in 2-4 sentences. Be educational and encouraging.
+If the question is unrelated to the topic, gently redirect back to the lesson content.
+Never use markdown formatting — plain text only.`;
+
+  const userPrompt = `Context: ${(context || "").slice(0, 1000)}
+
+Student question: ${question.trim()}`;
+
+  const { ok, result, status, error } = await callGemini(userPrompt, sysPrompt);
+  if (!ok) return res.status(status || 500).json({ error });
+
+  // Result may be JSON or plain text — extract text
+  let answer = result;
+  try {
+    const parsed = JSON.parse(result);
+    answer = parsed.answer || parsed.text || parsed.response || result;
+  } catch { /* plain text — use as is */ }
+
+  return res.json({ answer: answer.replace(/[*_`#]/g, "").trim() });
+});
+
+/* ── Health ──────────────────────────────────────────────── */
+app.get("/api/health", (_,r) => r.json({
+  status:    "ok",
+  model:     MODEL,
+  keys:      KEY_POOL.length,
+  cacheSize: CACHE.size,
+  db:        mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+}));
+
+/* ── Cache stats ─────────────────────────────────────────── */
+app.get("/api/cache", (_,r) => r.json({
+  size:    CACHE.size,
+  maxSize: CACHE_MAX,
+  keys:    [...CACHE.keys()].map(k => k.slice(0,8) + "..."),
+}));
+
+app.get("*", (q,r) => { if(!q.path.startsWith("/api/")) r.sendFile(path.join(__dirname,"index.html")); });
+
+/* ── Start ───────────────────────────────────────────────── */
 app.listen(PORT, () => {
-  console.log(`\n🚀  EduAI v2  http://localhost:${PORT}`);
-  console.log(`   Modes:  Kids · Student · Exam`);
-  console.log(`   Models: ${MODELS.join(" → ")}\n`);
+  console.log(`\n🚀  EduAI v2  →  http://localhost:${PORT}`);
+  console.log(`   Model:  ${MODEL}`);
+  console.log(`   Keys:   ${KEY_POOL.length} (${KEY_POOL.length * RPM_LIMIT} RPM total capacity)`);
+  console.log(`   Cache:  up to ${CACHE_MAX} results`);
+  console.log(`   Health: http://localhost:${PORT}/api/health\n`);
 });
