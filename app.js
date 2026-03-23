@@ -35,6 +35,9 @@
     audioLabel: $("audioLabel"), audioEl: $("audioEl"), tabPanel: $("tabPanel"),
     // footer
     footerStatus: $("footerStatus"),
+    // Q&A
+    qaBox: $("qaBox"), qaMessages: $("qaMessages"),
+    qaInput: $("qaInput"), qaSend: $("qaSend"),
   };
 
   /* ══ 2. State ═════════════════════════════════════════════ */
@@ -63,12 +66,23 @@
 
   /* ══ 4. Toast ══════════════════════════════════════════════ */
   let _toastTimer;
-  const toast = (msg, ms = 6000) => {
+  const toast = (msg, type = "error", ms = 5000) => {
+    if (!msg || !msg.trim()) return; // Never show empty toast
     EL.toastText.textContent = msg;
     EL.toast.hidden = false;
+    EL.toast.className = "toast toast--" + type;
     clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(() => EL.toast.hidden = true, ms);
+    _toastTimer = setTimeout(() => {
+      EL.toast.classList.add("toast--hiding");
+      setTimeout(() => {
+        EL.toast.hidden = true;
+        EL.toast.classList.remove("toast--hiding");
+      }, 300);
+    }, ms);
   };
+  const toastInfo  = (msg) => toast(msg, "info",    5000);
+  const toastError = (msg) => toast(msg, "error",   6000);
+  const toastWarn  = (msg) => toast(msg, "warning", 5000);
 
   /* ══ 5. View router ════════════════════════════════════════ */
   const showView = (name) => {
@@ -188,6 +202,10 @@
       b.classList.toggle("active", b.dataset.tab === "conversation");
     });
     renderTab("conversation");
+    // Show Q&A box whenever a lesson is open
+    EL.qaBox.hidden = false;
+    EL.qaMessages.innerHTML = "";
+    EL.qaInput.value = "";
     showView("lesson");
   };
 
@@ -207,6 +225,8 @@
   };
 
   /* ─ Conversation ─ */
+  let _qaHistory = []; // persists across re-renders
+
   const renderConversation = (l) => {
     const rows = (l.conversation || []).map((line, i) => {
       const isProf = line.speaker === "Professor";
@@ -220,14 +240,98 @@
         </div>`;
     }).join("");
 
+    // Build Q&A history HTML
+    const qaHistoryHTML = _qaHistory.map(msg => `
+      <div class="qa-msg ${msg.role}">
+        <div class="qa-avatar ${msg.role === "user" ? "user-av" : "prof"}">${msg.role === "user" ? "👤" : "👨‍🏫"}</div>
+        <div class="qa-bubble ${msg.role === "user" ? "user" : "prof"} ${msg.loading ? "loading" : ""}">${esc(msg.text)}</div>
+      </div>`).join("");
+
     EL.tabPanel.innerHTML = `
       <h2 class="tab-title">🎙️ Podcast Dialogue</h2>
       <p class="tab-sub">A ~2-minute conversation that explains the topic</p>
-      <div class="conv-list">${rows}</div>`;
+      <div class="conv-list">${rows}</div>
 
+      <!-- Q&A Chat Box -->
+      <div class="qa-box">
+        <h3 class="qa-box__title">💬 Ask a Question</h3>
+        <p class="qa-box__sub">Ask anything about this topic — the professor will answer based on the lesson content.</p>
+        <div class="qa-history" id="qaHistory">${qaHistoryHTML}</div>
+        <div class="qa-input-row">
+          <textarea class="qa-input" id="qaInput" rows="1"
+            placeholder="e.g. Can you explain immutability with another example?"></textarea>
+          <button class="qa-send-btn" id="qaSend" title="Send question">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>`;
+
+    // Bubble click to highlight
     EL.tabPanel.querySelectorAll(".bubble").forEach((b) => {
       b.addEventListener("click", () => b.classList.toggle("lit"));
     });
+
+    // Auto-resize textarea
+    const qaInput = document.getElementById("qaInput");
+    qaInput?.addEventListener("input", () => {
+      qaInput.style.height = "auto";
+      qaInput.style.height = Math.min(qaInput.scrollHeight, 120) + "px";
+    });
+
+    // Send on Enter (Shift+Enter for newline)
+    qaInput?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQA(); }
+    });
+
+    document.getElementById("qaSend")?.addEventListener("click", sendQA);
+
+    // Scroll history to bottom
+    const hist = document.getElementById("qaHistory");
+    if (hist) hist.scrollTop = hist.scrollHeight;
+  };
+
+  const sendQA = async () => {
+    const input  = document.getElementById("qaInput");
+    const sendBtn = document.getElementById("qaSend");
+    const q = input?.value.trim();
+    if (!q || !current) return;
+
+    // Add user message
+    _qaHistory.push({ role: "user", text: q });
+    input.value = "";
+    input.style.height = "auto";
+    sendBtn.disabled = true;
+
+    // Add loading professor message
+    _qaHistory.push({ role: "prof", text: "Thinking…", loading: true });
+    renderConversation(current);
+
+    try {
+      // Build context from lesson
+      const context = [
+        `Topic: ${current.topic}`,
+        `Explanation: ${current.simple_explanation}`,
+        `Conversation summary: ${(current.conversation||[]).map(l => l.speaker+": "+l.text).join(" | ").slice(0,1000)}`,
+      ].join("");
+
+      const res = await fetch("/api/generate-qa", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: q, context }),
+      });
+
+      let answer = "Sorry, I couldn't answer that right now.";
+      if (res.ok) {
+        const data = await res.json();
+        answer = data.answer || answer;
+      }
+
+      // Replace loading message with real answer
+      _qaHistory[_qaHistory.length - 1] = { role: "prof", text: answer };
+    } catch {
+      _qaHistory[_qaHistory.length - 1] = { role: "prof", text: "Connection error. Please try again." };
+    }
+
+    renderConversation(current);
   };
 
   /* ─ Quiz ─ */
@@ -466,7 +570,7 @@
       const msg = err.message || "Failed to generate lesson.";
       // Friendly message for rate limit
       if (msg.includes("503") || msg.includes("busy") || msg.includes("rate")) {
-        toast("⏳ Gemini is busy — the server is retrying automatically. Please wait 30 seconds and try again.");
+        toastWarn("⏳ AI is busy — retrying automatically. Please wait…");
       } else {
         toast("⚠️ " + msg);
       }
@@ -482,7 +586,7 @@
   // Web Speech API fallback (free, built into every browser)
   const speakWithBrowser = (text) => {
     if (!window.speechSynthesis) {
-      toast("⚠️ Your browser does not support speech synthesis.");
+      toastError("⚠️ Your browser does not support speech synthesis.");
       return;
     }
     window.speechSynthesis.cancel(); // stop any previous speech
@@ -536,7 +640,15 @@
 
       EL.audioBar.hidden        = false;
       EL.audioEl.src            = url;
-      EL.audioLabel.textContent = "Podcast audio ready ✨";
+      EL.audioLabel.textContent = "ElevenLabs audio ready ✨";
+      // Auto-play ElevenLabs audio
+      EL.audioEl.play().then(() => {
+        EL.audioPlay.textContent = "⏸";
+        audioPlaying = true;
+      }).catch(() => {
+        // Autoplay blocked — user needs to click play
+        EL.audioLabel.textContent = "Click ▶ to play ElevenLabs audio";
+      });
       renderTab("visual");
 
     } catch (err) {
@@ -545,7 +657,7 @@
       // Use free browser TTS as fallback
       const scriptText = (current.audio_script?.professor || []).join(" ");
       if (scriptText && window.speechSynthesis) {
-        toast("🔊 ElevenLabs unavailable — using your browser's built-in voice instead.");
+        toastInfo("🔊 Using browser voice — ElevenLabs key needs updating");
         speakWithBrowser(scriptText);
         if (btn) { btn.textContent = "🔊 Playing (browser voice)"; }
       } else {
@@ -611,7 +723,12 @@
   EL.btnBack.addEventListener("click",       () => showView(DB.count() > 1 ? "library" : "home"));
 
   // Toast
-  EL.toastClose.addEventListener("click", () => EL.toast.hidden = true);
+  EL.toastClose.addEventListener("click", () => {
+    clearTimeout(_toastTimer);
+    EL.toast.hidden = true;
+    EL.toast.className = "toast"; // Reset class so no colour bleeds through
+    EL.toastText.textContent = "";
+  });
 
   // Mode toggle
   [EL.modePaste, EL.modeFile].forEach((btn) => {
@@ -649,13 +766,49 @@
   });
 
   const handleFile = async (file) => {
+    if (!file) return;
+    const ext  = file.name.toLowerCase().split(".").pop();
+    const name = file.name;
+    EL.btnGenerate.innerHTML = `<span class="spin"></span> Reading ${name}…`;
     let text = "";
     try {
-      text = file.type === "text/plain" ? await API.readText(file) : await API.readPDF(file);
-    } catch (err) { toast("⚠️ " + err.message); return; }
-    if (!text.trim()) { toast("⚠️ No text found. Try pasting instead."); return; }
+      text = await API.readFile(file);
+    } catch (err) {
+      toastError("⚠️ Could not read " + name + ": " + err.message);
+      EL.btnGenerate.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Lesson`;
+      return;
+    }
+    if (!text.trim()) { toastError("⚠️ No readable text found in " + name + ". Try pasting the content directly."); return; }
     await handleGenerate(text);
   };
+
+  // Audio regen button — re-tries ElevenLabs
+  const btnRegenAudio = document.getElementById("btnRegenAudio");
+  if (btnRegenAudio) {
+    btnRegenAudio.addEventListener("click", async () => {
+      if (!current) return;
+      btnRegenAudio.disabled   = true;
+      btnRegenAudio.textContent = "⏳";
+      try {
+        const scriptText = (current.audio_script?.professor || []).join(" ");
+        if (!scriptText) throw new Error("No audio script available.");
+        const url = await API.generateAudio(current.localId, scriptText);
+        DB.patch(current.localId, { audioUrl: url });
+        current.audioUrl = url;
+        EL.audioEl.src   = url;
+        EL.audioEl.play();
+        EL.audioPlay.textContent  = "⏸";
+        EL.audioLabel.textContent = "ElevenLabs audio ✨";
+        audioPlaying = true;
+        btnRegenAudio.textContent = "🔄";
+      } catch (err) {
+        toastError("🔊 ElevenLabs error: " + err.message);
+        btnRegenAudio.textContent = "🔄";
+      } finally {
+        btnRegenAudio.disabled = false;
+      }
+    });
+  }
 
   // Tabs
   document.querySelectorAll(".tab-pill").forEach((btn) => {
@@ -670,6 +823,63 @@
   const esc = (s) => String(s ?? "")
     .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
     .replace(/"/g,"&quot;");
+
+  /* ══ Q&A Chat logic ════════════════════════════════════════ */
+  const addQAMsg = (text, role) => {
+    const div    = document.createElement("div");
+    div.className = `qa-msg ${role}`;
+    const emoji  = role === "user" ? "👤" : "👨‍🏫";
+    div.innerHTML = `
+      <div class="qa-msg__avatar">${emoji}</div>
+      <div class="qa-msg__bubble">${esc(text)}</div>`;
+    EL.qaMessages.appendChild(div);
+    EL.qaMessages.scrollTop = EL.qaMessages.scrollHeight;
+    return div;
+  };
+
+  const addTypingIndicator = () => {
+    const div    = document.createElement("div");
+    div.className = "qa-msg ai";
+    div.id        = "qaTyping";
+    div.innerHTML = `
+      <div class="qa-msg__avatar">👨‍🏫</div>
+      <div class="qa-msg__bubble">
+        <div class="qa-msg__typing"><span></span><span></span><span></span></div>
+      </div>`;
+    EL.qaMessages.appendChild(div);
+    EL.qaMessages.scrollTop = EL.qaMessages.scrollHeight;
+  };
+
+  const sendQuestion = async () => {
+    const q = EL.qaInput.value.trim();
+    if (!q || !current) return;
+
+    EL.qaInput.value = "";
+    EL.qaSend.disabled = true;
+    addQAMsg(q, "user");
+    addTypingIndicator();
+
+    // Build context from lesson conversation
+    const ctx = (current.conversation || [])
+      .map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 1000);
+
+    try {
+      const answer = await API.askQuestion(q, current.topic, ctx);
+      document.getElementById("qaTyping")?.remove();
+      addQAMsg(answer, "ai");
+    } catch (err) {
+      document.getElementById("qaTyping")?.remove();
+      addQAMsg("Sorry, I couldn't answer that right now. Please try again.", "ai");
+    } finally {
+      EL.qaSend.disabled = false;
+      EL.qaInput.focus();
+    }
+  };
+
+  EL.qaSend.addEventListener("click", sendQuestion);
+  EL.qaInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
+  });
 
   /* ══ 15. Boot ══════════════════════════════════════════════ */
   const boot = async () => {
