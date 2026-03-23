@@ -164,11 +164,32 @@ Return ONLY a valid JSON object — no markdown, no preamble, no explanation:
   "conversation": [{"speaker":"Student","text":"string"},{"speaker":"Professor","text":"string"}],
   "simple_explanation": "string",
   "questions": {
-    "basic":    [{"q":"string","a":"string"},{"q":"string","a":"string"},{"q":"string","a":"string"}],
-    "medium":   [{"q":"string","a":"string"},{"q":"string","a":"string"},{"q":"string","a":"string"}],
-    "advanced": [{"q":"string","a":"string"},{"q":"string","a":"string"}]
+    "basic": [
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"A","explanation":"string"},
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"B","explanation":"string"},
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"C","explanation":"string"}
+    ],
+    "medium": [
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"A","explanation":"string"},
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"B","explanation":"string"},
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"C","explanation":"string"}
+    ],
+    "advanced": [
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"A","explanation":"string"},
+      {"q":"string","options":["A. string","B. string","C. string","D. string"],"answer":"B","explanation":"string"}
+    ]
   },
-  "summary": ["string","string","string","string","string"],
+  "summary": {
+    "overview": "string (3-4 sentences overview of the entire topic)",
+    "key_points": ["string","string","string","string","string"],
+    "detailed_notes": [
+      {"heading":"string","content":"string (2-3 sentences explaining this concept in depth)"},
+      {"heading":"string","content":"string"},
+      {"heading":"string","content":"string"},
+      {"heading":"string","content":"string"}
+    ],
+    "conclusion": "string (2-3 sentences wrapping up the topic and its importance)"
+  },
   "cheatsheet": {
     "key_terms":    [{"term":"string","definition":"string"}],
     "core_concepts":["string","string","string","string","string"],
@@ -183,7 +204,11 @@ Return ONLY a valid JSON object — no markdown, no preamble, no explanation:
 ${mode.toUpperCase()} mode rules:
 ${MODE_RULES[mode]}
 
-General: summary = exactly 5 strings, cheatsheet.formulas = [] if no formulas apply.`;
+General rules:
+- questions: each question MUST have exactly 4 options (A,B,C,D), one correct answer letter, and a clear explanation
+- summary.key_points = exactly 5 strings
+- summary.detailed_notes = exactly 4 objects with heading + content
+- cheatsheet.formulas = [] if no formulas apply`;
 
 /* ══════════════════════════════════════════════════════════════
    7. GEMINI CALL
