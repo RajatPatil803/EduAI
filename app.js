@@ -1,9 +1,5 @@
 /**
  * app.js — EduAI v2  Application Logic
- * ─────────────────────────────────────────────────────────────
- * Handles view routing, rendering, events, audio player.
- * Depends on: db.js (window.DB)  api.js (window.API)
- * ─────────────────────────────────────────────────────────────
  */
 
 (() => {
@@ -35,16 +31,14 @@
     audioLabel: $("audioLabel"), audioEl: $("audioEl"), tabPanel: $("tabPanel"),
     // footer
     footerStatus: $("footerStatus"),
-    // Q&A
-    qaBox: $("qaBox"), qaMessages: $("qaMessages"),
-    qaInput: $("qaInput"), qaSend: $("qaSend"),
   };
 
   /* ══ 2. State ═════════════════════════════════════════════ */
-  let view    = "home";
-  let current = null;  // active lesson object
+  let view      = "home";
+  let current   = null;
   let activeTab = "conversation";
-  let learningMode = "student"; // "student" | "kids" | "exam"
+  let learningMode = "student";
+  let _qaHistory   = [];
 
   /* ══ 3. Progress bar ═══════════════════════════════════════ */
   let _progTimer;
@@ -67,7 +61,7 @@
   /* ══ 4. Toast ══════════════════════════════════════════════ */
   let _toastTimer;
   const toast = (msg, type = "error", ms = 5000) => {
-    if (!msg || !msg.trim()) return; // Never show empty toast
+    if (!msg || !msg.trim()) return;
     EL.toastText.textContent = msg;
     EL.toast.hidden = false;
     EL.toast.className = "toast toast--" + type;
@@ -125,8 +119,7 @@
     container.querySelectorAll(".lesson-card").forEach((card) => {
       card.addEventListener("click", (e) => {
         if (e.target.closest("[data-del]")) return;
-        const id = card.dataset.id;
-        const l  = DB.load(id);
+        const l = DB.load(card.dataset.id);
         if (l) openLesson(l);
       });
     });
@@ -161,7 +154,7 @@
 
   const refreshNav = () => {
     const n = DB.count();
-    EL.navCount.textContent      = n;
+    EL.navCount.textContent        = n;
     EL.btnNavLibrary.style.display = n > 0 ? "" : "none";
   };
 
@@ -173,20 +166,22 @@
   };
 
   const openLesson = (lesson) => {
-    current   = lesson;
-    activeTab = "conversation";
+    current      = lesson;
+    activeTab    = "conversation";
+    _qaHistory   = []; // reset Q&A history for new lesson
+
     EL.lessonTitle.textContent = lesson.topic || "Lesson";
     EL.lessonDate.textContent  = new Date(lesson.createdAt)
       .toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 
     // Learning mode badge
-    const modeBadge = document.getElementById("lessonModeBadge");
+    const modeBadge = $("lessonModeBadge");
     if (modeBadge) {
-      const m = lesson.learningMode || "student";
+      const m    = lesson.learningMode || "student";
       const meta = MODE_META[m] || MODE_META.student;
-      modeBadge.textContent  = meta.label;
-      modeBadge.className    = `lesson-mode-badge ${meta.cls}`;
-      modeBadge.style.display = "";
+      modeBadge.textContent    = meta.label;
+      modeBadge.className      = `lesson-mode-badge ${meta.cls}`;
+      modeBadge.style.display  = "";
     }
 
     // Audio bar
@@ -201,11 +196,8 @@
     document.querySelectorAll(".tab-pill").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === "conversation");
     });
+
     renderTab("conversation");
-    // Show Q&A box whenever a lesson is open
-    EL.qaBox.hidden = false;
-    EL.qaMessages.innerHTML = "";
-    EL.qaInput.value = "";
     showView("lesson");
   };
 
@@ -224,9 +216,7 @@
     renderers[tab]?.(current);
   };
 
-  /* ─ Conversation ─ */
-  let _qaHistory = []; // persists across re-renders
-
+  /* ─ Conversation + Q&A ─ */
   const renderConversation = (l) => {
     const rows = (l.conversation || []).map((line, i) => {
       const isProf = line.speaker === "Professor";
@@ -240,7 +230,6 @@
         </div>`;
     }).join("");
 
-    // Build Q&A history HTML
     const qaHistoryHTML = _qaHistory.map(msg => `
       <div class="qa-msg ${msg.role}">
         <div class="qa-avatar ${msg.role === "user" ? "user-av" : "prof"}">${msg.role === "user" ? "👤" : "👨‍🏫"}</div>
@@ -251,8 +240,6 @@
       <h2 class="tab-title">🎙️ Podcast Dialogue</h2>
       <p class="tab-sub">A ~2-minute conversation that explains the topic</p>
       <div class="conv-list">${rows}</div>
-
-      <!-- Q&A Chat Box -->
       <div class="qa-box">
         <h3 class="qa-box__title">💬 Ask a Question</h3>
         <p class="qa-box__sub">Ask anything about this topic — the professor will answer based on the lesson content.</p>
@@ -261,71 +248,56 @@
           <textarea class="qa-input" id="qaInput" rows="1"
             placeholder="e.g. Can you explain immutability with another example?"></textarea>
           <button class="qa-send-btn" id="qaSend" title="Send question">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
           </button>
         </div>
       </div>`;
 
-    // Bubble click to highlight
+    // Bubble highlight on click
     EL.tabPanel.querySelectorAll(".bubble").forEach((b) => {
       b.addEventListener("click", () => b.classList.toggle("lit"));
     });
 
     // Auto-resize textarea
-    const qaInput = document.getElementById("qaInput");
+    const qaInput = $("qaInput");
     qaInput?.addEventListener("input", () => {
       qaInput.style.height = "auto";
       qaInput.style.height = Math.min(qaInput.scrollHeight, 120) + "px";
     });
 
-    // Send on Enter (Shift+Enter for newline)
+    // Send on Enter
     qaInput?.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQA(); }
     });
 
-    document.getElementById("qaSend")?.addEventListener("click", sendQA);
+    $("qaSend")?.addEventListener("click", sendQA);
 
     // Scroll history to bottom
-    const hist = document.getElementById("qaHistory");
+    const hist = $("qaHistory");
     if (hist) hist.scrollTop = hist.scrollHeight;
   };
 
   const sendQA = async () => {
-    const input  = document.getElementById("qaInput");
-    const sendBtn = document.getElementById("qaSend");
+    const input   = $("qaInput");
+    const sendBtn = $("qaSend");
     const q = input?.value.trim();
     if (!q || !current) return;
 
-    // Add user message
     _qaHistory.push({ role: "user", text: q });
     input.value = "";
     input.style.height = "auto";
-    sendBtn.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
 
-    // Add loading professor message
     _qaHistory.push({ role: "prof", text: "Thinking…", loading: true });
     renderConversation(current);
 
     try {
-      // Build context from lesson
-      const context = [
-        `Topic: ${current.topic}`,
-        `Explanation: ${current.simple_explanation}`,
-        `Conversation summary: ${(current.conversation||[]).map(l => l.speaker+": "+l.text).join(" | ").slice(0,1000)}`,
-      ].join("");
-
-      const res = await fetch("/api/generate-qa", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, context }),
-      });
-
-      let answer = "Sorry, I couldn't answer that right now.";
-      if (res.ok) {
-        const data = await res.json();
-        answer = data.answer || answer;
-      }
-
-      // Replace loading message with real answer
+      const ctx = (current.conversation || [])
+        .map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 1000);
+      const answer = await API.askQuestion(q, current.topic, ctx);
       _qaHistory[_qaHistory.length - 1] = { role: "prof", text: answer };
     } catch {
       _qaHistory[_qaHistory.length - 1] = { role: "prof", text: "Connection error. Please try again." };
@@ -380,15 +352,14 @@
     let revealed = 0;
     EL.tabPanel.querySelectorAll(".reveal-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const id  = btn.dataset.reveal;
-        const ans = EL.tabPanel.querySelector(`[data-ans="${id}"]`);
+        const ans = EL.tabPanel.querySelector(`[data-ans="${btn.dataset.reveal}"]`);
         if (ans?.hidden) {
           ans.hidden = false;
           btn.remove();
           revealed++;
           const pct = Math.round((revealed / totalQ) * 100);
-          document.getElementById("qBar").style.width = `${pct}%`;
-          document.getElementById("qLbl").textContent = `${revealed} / ${totalQ} revealed`;
+          $("qBar").style.width  = `${pct}%`;
+          $("qLbl").textContent  = `${revealed} / ${totalQ} revealed`;
         }
       });
     });
@@ -411,7 +382,6 @@
       <div class="key-pts">${pts}</div>`;
   };
 
-
   /* ─ Cheat Sheet ─ */
   const renderCheatSheet = (l) => {
     const cs = l.cheatsheet || {};
@@ -422,7 +392,7 @@
         <div class="cs-row__a">${esc(t.definition)}</div>
       </div>`).join("") || '<p style="color:var(--muted);font-size:13px">No key terms found.</p>';
 
-    const conceptsHTML = (cs.core_concepts || []).map((c, i) =>
+    const conceptsHTML = (cs.core_concepts || []).map((c) =>
       `<div class="cs-bullet">${esc(c)}</div>`
     ).join("");
 
@@ -448,10 +418,9 @@
       `<span class="cs-pill teal">${esc(t)}</span>`
     ).join("");
 
-    // Mode-specific header color
     const modeColors = { student:"var(--accent)", kids:"var(--teal)", exam:"var(--gold)" };
     const modeColor  = modeColors[l.learningMode || "student"];
-    const modeLabel  = { student:"Student", kids:"Kids 🧸", exam:"Exam 📝" }[l.learningMode||"student"];
+    const modeLabel  = { student:"Student", kids:"Kids 🧸", exam:"Exam 📝" }[l.learningMode || "student"];
 
     EL.tabPanel.innerHTML = `
       <div class="cheatsheet">
@@ -463,36 +432,27 @@
               <div class="cheatsheet__topic">${esc(l.topic)} · ${modeLabel} Mode</div>
             </div>
           </div>
-          <button class="cheatsheet__download" onclick="window.print()">
-            🖨️ Print / Save PDF
-          </button>
+          <button class="cheatsheet__download" onclick="window.print()">🖨️ Print / Save PDF</button>
         </div>
-
         <div class="cheatsheet__body">
-
           <div class="cs-section">
             <div class="cs-section__title">📖 Key Terms</div>
             <div class="cs-rows">${keyTermsHTML}</div>
           </div>
-
           <div class="cs-section">
             <div class="cs-section__title">💡 Core Concepts</div>
             <div class="cs-bullets">${conceptsHTML}</div>
           </div>
-
           <div class="cs-section">
             <div class="cs-section__title">❓ Quick Q&amp;A</div>
             <div class="cs-rows">${quickQAHTML}</div>
           </div>
-
           ${formulasHTML}
-
           ${tipsHTML ? `
           <div class="cs-section">
             <div class="cs-section__title">🧠 Memory Tips</div>
             <div class="cs-pills">${tipsHTML}</div>
           </div>` : ""}
-
         </div>
         <div class="cheatsheet__print-note">
           💡 Use Ctrl+P (or ⌘+P) and select "Save as PDF" to download this cheat sheet
@@ -502,7 +462,7 @@
 
   /* ─ Visual Map ─ */
   const renderVisual = (l) => {
-    const typeEmoji = { diagram: "📊", chart: "📈", illustration: "🖼️" };
+    const typeEmoji = { diagram:"📊", chart:"📈", illustration:"🖼️" };
     const visuals = (l.visual_suggestions || []).map((v) => `
       <div class="vis-item">
         <div class="vis-item__icon">${typeEmoji[v.type] || "🖼️"}</div>
@@ -523,12 +483,9 @@
           `<div class="audio-line">"${esc(line)}"</div>`).join("")}
       </div>`;
 
-    // TTS button
     const ttsBtn = l.audioUrl
       ? `<p style="color:var(--teal);font-size:13px;margin-top:16px">🔊 Audio already generated — use the player above.</p>`
-      : `<button class="btn-primary" id="btnTTS" style="margin-top:16px">
-           🔊 Generate Spoken Audio (ElevenLabs)
-         </button>`;
+      : `<button class="btn-primary" id="btnTTS" style="margin-top:16px">🔊 Generate Spoken Audio (ElevenLabs)</button>`;
 
     EL.tabPanel.innerHTML = `
       <h2 class="tab-title">🗺️ Visual Learning Map</h2>
@@ -540,7 +497,7 @@
         ${colHTML("student",   "var(--teal)")}
       </div>`;
 
-    document.getElementById("btnTTS")?.addEventListener("click", handleTTS);
+    $("btnTTS")?.addEventListener("click", handleTTS);
   };
 
   /* ══ 10. Generate flow ═════════════════════════════════════ */
@@ -552,15 +509,16 @@
 
     try {
       const modeLabel = { student:"🎒 Student", kids:"🧸 Kids", exam:"📝 Exam" };
-      EL.btnGenerate.innerHTML = `<span class="spin"></span> ${modeLabel[learningMode]||""} Mode…`;
+      EL.btnGenerate.innerHTML = `<span class="spin"></span> ${modeLabel[learningMode] || ""} Mode…`;
       const lesson = await API.generateLesson(text, (pct) => {
         EL.navProgressFill.style.width = `${pct}%`;
         if (pct === 55) EL.btnGenerate.innerHTML = `<span class="spin"></span> AI thinking…`;
       }, learningMode);
-      lesson.localId     = `lesson_${Date.now()}`;
-      lesson.createdAt  = Date.now();
-      lesson.audioUrl   = null;
-      lesson.synced     = false;
+
+      lesson.localId      = `lesson_${Date.now()}`;
+      lesson.createdAt    = Date.now();
+      lesson.audioUrl     = null;
+      lesson.synced       = false;
       lesson.learningMode = learningMode;
 
       await DB.save(lesson);
@@ -568,7 +526,6 @@
       openLesson(lesson);
     } catch (err) {
       const msg = err.message || "Failed to generate lesson.";
-      // Friendly message for rate limit
       if (msg.includes("503") || msg.includes("busy") || msg.includes("rate")) {
         toastWarn("⏳ AI is busy — retrying automatically. Please wait…");
       } else {
@@ -581,34 +538,21 @@
     }
   };
 
-  /* ══ 11. TTS flow — ElevenLabs with Web Speech fallback ═══ */
-
-  // Web Speech API fallback (free, built into every browser)
+  /* ══ 11. TTS ═══════════════════════════════════════════════ */
   const speakWithBrowser = (text) => {
-    if (!window.speechSynthesis) {
-      toastError("⚠️ Your browser does not support speech synthesis.");
-      return;
-    }
-    window.speechSynthesis.cancel(); // stop any previous speech
-
-    // Split into chunks (speechSynthesis has a ~200 char limit per utterance)
+    if (!window.speechSynthesis) { toastError("⚠️ Your browser does not support speech synthesis."); return; }
+    window.speechSynthesis.cancel();
     const CHUNK = 200;
     const chunks = [];
     for (let i = 0; i < text.length; i += CHUNK) chunks.push(text.slice(i, i + CHUNK));
-
     let idx = 0;
     const speakNext = () => {
-      if (idx >= chunks.length) {
-        EL.audioPlay.textContent = "▶";
-        EL.audioLabel.textContent = "Playback complete";
-        return;
-      }
-      const utt       = new SpeechSynthesisUtterance(chunks[idx++]);
-      utt.rate        = 0.95;
-      utt.pitch       = 1.0;
-      utt.onend       = speakNext;
-      utt.onerror     = () => {};
-      // Pick a natural voice if available
+      if (idx >= chunks.length) { EL.audioPlay.textContent = "▶"; EL.audioLabel.textContent = "Playback complete"; return; }
+      const utt    = new SpeechSynthesisUtterance(chunks[idx++]);
+      utt.rate     = 0.95;
+      utt.pitch    = 1.0;
+      utt.onend    = speakNext;
+      utt.onerror  = () => {};
       const voices    = window.speechSynthesis.getVoices();
       const preferred = voices.find(v => v.lang.startsWith("en") && v.name.includes("Google"))
                      || voices.find(v => v.lang.startsWith("en"))
@@ -616,50 +560,34 @@
       if (preferred) utt.voice = preferred;
       window.speechSynthesis.speak(utt);
     };
-
-    EL.audioBar.hidden    = false;
+    EL.audioBar.hidden        = false;
     EL.audioLabel.textContent = "Speaking (browser voice)…";
     EL.audioPlay.textContent  = "⏸";
     speakNext();
   };
 
-  // Toggle browser speech play/pause
-  let browserSpeaking = false;
-
   const handleTTS = async () => {
     if (!current) return;
-    const btn = document.getElementById("btnTTS");
+    const btn = $("btnTTS");
     if (btn) { btn.disabled = true; btn.textContent = "Generating audio…"; }
-
     try {
       const scriptText = (current.audio_script?.professor || []).join(" ");
       const url = await API.generateAudio(current.localId, scriptText);
-
       DB.patch(current.localId, { audioUrl: url });
-      current.audioUrl = url;
-
+      current.audioUrl          = url;
       EL.audioBar.hidden        = false;
       EL.audioEl.src            = url;
       EL.audioLabel.textContent = "ElevenLabs audio ready ✨";
-      // Auto-play ElevenLabs audio
-      EL.audioEl.play().then(() => {
-        EL.audioPlay.textContent = "⏸";
-        audioPlaying = true;
-      }).catch(() => {
-        // Autoplay blocked — user needs to click play
-        EL.audioLabel.textContent = "Click ▶ to play ElevenLabs audio";
-      });
+      EL.audioEl.play().then(() => { EL.audioPlay.textContent = "⏸"; audioPlaying = true; })
+        .catch(() => { EL.audioLabel.textContent = "Click ▶ to play ElevenLabs audio"; });
       renderTab("visual");
-
     } catch (err) {
       console.warn("ElevenLabs failed, using browser speech:", err.message);
-
-      // Use free browser TTS as fallback
       const scriptText = (current.audio_script?.professor || []).join(" ");
       if (scriptText && window.speechSynthesis) {
         toastInfo("🔊 Using browser voice — ElevenLabs key needs updating");
         speakWithBrowser(scriptText);
-        if (btn) { btn.textContent = "🔊 Playing (browser voice)"; }
+        if (btn) btn.textContent = "🔊 Playing (browser voice)";
       } else {
         toast("🔊 Audio unavailable: " + err.message);
         if (btn) { btn.disabled = false; btn.textContent = "🔊 Generate Spoken Audio (ElevenLabs)"; }
@@ -667,30 +595,19 @@
     }
   };
 
-  /* ══ 12. Audio player ═══════════════════════════════════════ */
+  /* ══ 12. Audio player ══════════════════════════════════════ */
   let audioPlaying = false;
   EL.audioPlay.addEventListener("click", () => {
-    // Handle ElevenLabs audio element
     if (current?.audioUrl && EL.audioEl.src) {
-      if (audioPlaying) {
-        EL.audioEl.pause();
-        EL.audioPlay.textContent = "▶";
-        audioPlaying = false;
-      } else {
-        EL.audioEl.play();
-        EL.audioPlay.textContent = "⏸";
-        audioPlaying = true;
-      }
+      if (audioPlaying) { EL.audioEl.pause(); EL.audioPlay.textContent = "▶"; audioPlaying = false; }
+      else              { EL.audioEl.play();  EL.audioPlay.textContent = "⏸"; audioPlaying = true;  }
       return;
     }
-    // Handle browser speech synthesis
     if (window.speechSynthesis) {
       if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-        window.speechSynthesis.pause();
-        EL.audioPlay.textContent = "▶";
+        window.speechSynthesis.pause();  EL.audioPlay.textContent = "▶";
       } else if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-        EL.audioPlay.textContent = "⏸";
+        window.speechSynthesis.resume(); EL.audioPlay.textContent = "⏸";
       }
     }
   });
@@ -699,9 +616,7 @@
     EL.audioFill.style.width = `${(EL.audioEl.currentTime / EL.audioEl.duration) * 100}%`;
   });
   EL.audioEl.addEventListener("ended", () => {
-    EL.audioPlay.textContent = "▶";
-    audioPlaying = false;
-    EL.audioFill.style.width = "0%";
+    EL.audioPlay.textContent = "▶"; audioPlaying = false; EL.audioFill.style.width = "0%";
   });
 
   /* ══ 13. Event listeners ═══════════════════════════════════ */
@@ -722,15 +637,15 @@
   EL.btnLibCreate.addEventListener("click",  () => showView("home"));
   EL.btnBack.addEventListener("click",       () => showView(DB.count() > 1 ? "library" : "home"));
 
-  // Toast
+  // Toast close
   EL.toastClose.addEventListener("click", () => {
     clearTimeout(_toastTimer);
-    EL.toast.hidden = true;
-    EL.toast.className = "toast"; // Reset class so no colour bleeds through
+    EL.toast.hidden    = true;
+    EL.toast.className = "toast";
     EL.toastText.textContent = "";
   });
 
-  // Mode toggle
+  // Mode toggle (Paste / File)
   [EL.modePaste, EL.modeFile].forEach((btn) => {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
@@ -744,16 +659,16 @@
   // Textarea
   EL.inputText.addEventListener("input", () => {
     const n = EL.inputText.value.length;
-    EL.charCount.textContent  = `${n} / 8000`;
-    EL.btnGenerate.disabled   = n === 0;
+    EL.charCount.textContent = `${n} / 8000`;
+    EL.btnGenerate.disabled  = n === 0;
   });
   EL.btnGenerate.addEventListener("click", () => handleGenerate(EL.inputText.value));
 
   // Drop zone
-  EL.dropZone.addEventListener("click",   () => EL.fileInput.click());
-  EL.dropZone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
+  EL.dropZone.addEventListener("click",    () => EL.fileInput.click());
+  EL.dropZone.addEventListener("keydown",  (e) => { if (e.key === "Enter" || e.key === " ") EL.fileInput.click(); });
   EL.dropZone.addEventListener("dragover", (e) => { e.preventDefault(); EL.panelFile.classList.add("drag"); });
-  EL.dropZone.addEventListener("dragleave", () => EL.panelFile.classList.remove("drag"));
+  EL.dropZone.addEventListener("dragleave",() => EL.panelFile.classList.remove("drag"));
   EL.dropZone.addEventListener("drop", async (e) => {
     e.preventDefault(); EL.panelFile.classList.remove("drag");
     const file = e.dataTransfer.files?.[0];
@@ -767,7 +682,6 @@
 
   const handleFile = async (file) => {
     if (!file) return;
-    const ext  = file.name.toLowerCase().split(".").pop();
     const name = file.name;
     EL.btnGenerate.innerHTML = `<span class="spin"></span> Reading ${name}…`;
     let text = "";
@@ -782,30 +696,29 @@
     await handleGenerate(text);
   };
 
-  // Audio regen button — re-tries ElevenLabs
-  const btnRegenAudio = document.getElementById("btnRegenAudio");
+  // Audio regen
+  const btnRegenAudio = $("btnRegenAudio");
   if (btnRegenAudio) {
     btnRegenAudio.addEventListener("click", async () => {
       if (!current) return;
-      btnRegenAudio.disabled   = true;
+      btnRegenAudio.disabled    = true;
       btnRegenAudio.textContent = "⏳";
       try {
         const scriptText = (current.audio_script?.professor || []).join(" ");
         if (!scriptText) throw new Error("No audio script available.");
         const url = await API.generateAudio(current.localId, scriptText);
         DB.patch(current.localId, { audioUrl: url });
-        current.audioUrl = url;
-        EL.audioEl.src   = url;
+        current.audioUrl          = url;
+        EL.audioEl.src            = url;
         EL.audioEl.play();
         EL.audioPlay.textContent  = "⏸";
         EL.audioLabel.textContent = "ElevenLabs audio ✨";
         audioPlaying = true;
-        btnRegenAudio.textContent = "🔄";
       } catch (err) {
         toastError("🔊 ElevenLabs error: " + err.message);
-        btnRegenAudio.textContent = "🔄";
       } finally {
-        btnRegenAudio.disabled = false;
+        btnRegenAudio.disabled    = false;
+        btnRegenAudio.textContent = "🔄";
       }
     });
   }
@@ -821,77 +734,15 @@
 
   /* ══ 14. Utilities ═════════════════════════════════════════ */
   const esc = (s) => String(s ?? "")
-    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-    .replace(/"/g,"&quot;");
-
-  /* ══ Q&A Chat logic ════════════════════════════════════════ */
-  const addQAMsg = (text, role) => {
-    const div    = document.createElement("div");
-    div.className = `qa-msg ${role}`;
-    const emoji  = role === "user" ? "👤" : "👨‍🏫";
-    div.innerHTML = `
-      <div class="qa-msg__avatar">${emoji}</div>
-      <div class="qa-msg__bubble">${esc(text)}</div>`;
-    EL.qaMessages.appendChild(div);
-    EL.qaMessages.scrollTop = EL.qaMessages.scrollHeight;
-    return div;
-  };
-
-  const addTypingIndicator = () => {
-    const div    = document.createElement("div");
-    div.className = "qa-msg ai";
-    div.id        = "qaTyping";
-    div.innerHTML = `
-      <div class="qa-msg__avatar">👨‍🏫</div>
-      <div class="qa-msg__bubble">
-        <div class="qa-msg__typing"><span></span><span></span><span></span></div>
-      </div>`;
-    EL.qaMessages.appendChild(div);
-    EL.qaMessages.scrollTop = EL.qaMessages.scrollHeight;
-  };
-
-  const sendQuestion = async () => {
-    const q = EL.qaInput.value.trim();
-    if (!q || !current) return;
-
-    EL.qaInput.value = "";
-    EL.qaSend.disabled = true;
-    addQAMsg(q, "user");
-    addTypingIndicator();
-
-    // Build context from lesson conversation
-    const ctx = (current.conversation || [])
-      .map(l => `${l.speaker}: ${l.text}`).join("\n").slice(0, 1000);
-
-    try {
-      const answer = await API.askQuestion(q, current.topic, ctx);
-      document.getElementById("qaTyping")?.remove();
-      addQAMsg(answer, "ai");
-    } catch (err) {
-      document.getElementById("qaTyping")?.remove();
-      addQAMsg("Sorry, I couldn't answer that right now. Please try again.", "ai");
-    } finally {
-      EL.qaSend.disabled = false;
-      EL.qaInput.focus();
-    }
-  };
-
-  EL.qaSend.addEventListener("click", sendQuestion);
-  EL.qaInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
-  });
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 
   /* ══ 15. Boot ══════════════════════════════════════════════ */
   const boot = async () => {
     renderRecent();
     showView("home");
-
-    // Check server health
     const ok = await API.health();
     EL.footerStatus.textContent = ok ? "●  Server online" : "●  Server offline";
-    EL.footerStatus.style.color = ok ? "var(--teal)" : "var(--danger)";
-
-    // Pull any lessons from MongoDB
+    EL.footerStatus.style.color = ok ? "var(--teal)"      : "var(--danger)";
     if (ok) DB.syncFromMongo().then(renderRecent).catch(() => {});
   };
 
