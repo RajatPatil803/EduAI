@@ -466,12 +466,3 @@ app.listen(PORT, () => {
     }
   }, 14 * 60 * 1000); // 14 minutes
 });
-```
-
-After saving the file, do these two things:
-
-**1. Add the environment variable in Render:**
-Go to Render Dashboard → EduAI → **Environment** → **Add Environment Variable**:
-```
-Key:   RENDER_EXTERNAL_URL
-Value: https://eduai-wsa4.onrender.com
